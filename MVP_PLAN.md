@@ -46,7 +46,7 @@ Run this locally before committing each phase, and again as the **last** thing y
 
 Before implementation begins, the following must be available:
 
-- Python 3.13+ on the host machine
+- Python 3.14+ on the host machine
 - Docker (or Podman) installed and functional
 - An Adamant project with the standard layout (see [ARCHITECTURE.md](ARCHITECTURE.md) for layout details)
 - `uv` installed (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
@@ -61,7 +61,7 @@ Before implementation begins, the following must be available:
 
 1. **Hand-craft the project skeleton.** Do **not** run `uv init` -- it scaffolds artifacts we would have to rewrite or delete (`hello.py`, a generic `README.md`, a minimal `pyproject.toml`). Instead, create the files listed below directly:
    - `pyproject.toml` (hand-written to match [CODING_RULES.md](CODING_RULES.md) ruff/mypy/pytest/coverage config exactly)
-   - `.python-version` containing `3.13`
+   - `.python-version` containing `3.14`
    - `.gitignore` covering `__pycache__/`, `*.pyc`, `.venv/`, `build/`, `dist/`, `.mypy_cache/`, `.ruff_cache/`, `.pytest_cache/`, `htmlcov/`, `.coverage`, `*.egg-info/`
 
    After the files are in place, run `uv sync --dev` to build the venv from `pyproject.toml`.

@@ -26,7 +26,7 @@ These rules apply to **all** code contributed to admt, whether written by a huma
 
 ## Language and Runtime
 
-- **Python 3.13+** is the minimum supported version. Use modern Python features (type unions with `|`, `match` statements, `StrEnum`, etc.) where they improve clarity.
+- **Python 3.14+** is the minimum supported version. Use modern Python features (type unions with `|`, `match` statements, `StrEnum`, etc.) where they improve clarity.
 - **Target platforms:** Linux and macOS for MVP. Windows is not yet a target but will be supported in the future. Do not introduce platform-specific code (e.g., hardcoded `/` separators, Unix-only subprocess flags) that would preclude Windows support. Use `pathlib.Path` for all path operations.
 
 ---
@@ -51,7 +51,7 @@ Ruff is configured in strict/pedantic mode with most rule sets enabled. This is 
 ```toml
 # In pyproject.toml
 [tool.ruff]
-target-version = "py313"
+target-version = "py314"
 line-length = 100
 
 [tool.ruff.lint]
@@ -118,9 +118,10 @@ max-complexity = 10
 
 **When ruff reports a violation, fix it. Do not suppress it.** Run `ruff rule <CODE>` (e.g., `ruff rule TRY003`) to understand a rule before deciding it does not apply.
 
-The narrow legitimate exceptions:
-- The `[tool.ruff.lint.per-file-ignores]` table above carries the only project-wide suppressions (test-file relaxations, `subprocess` calls in adapters). Adding a new entry here requires a justifying comment on the same line and reviewer agreement.
-- Inline `# noqa: <CODE>` is **not allowed**. If you find yourself reaching for it, the right answer is almost always to fix the code, not silence the linter.
+The narrow legitimate exceptions, in order of preference:
+- **Fix the code.** Most violations have a clean code-level fix (e.g., use `msg = "x"; raise E(msg)` instead of `raise E("x")` for `EM101`; use `Path("/sim/foo")` instead of `Path("/tmp/foo")` in tests for `S108`). Reach for a suppression only after confirming no such fix exists.
+- **`[tool.ruff.lint.per-file-ignores]`** is for broad, file-type-wide relaxations (test-file conventions, `subprocess` calls in adapters). Adding a new entry here requires a justifying comment on the same line and reviewer agreement.
+- **Inline `# noqa: <CODE>`** is permitted **only for surgical cases** where fixing the code is impossible -- typically where a framework (e.g., Click) dictates a pattern the linter dislikes, and the violation is confined to one or two lines. Every inline suppression **must** carry a same-line or immediately-adjacent comment explaining why no code fix exists. Prefer the per-file table first; drop to inline only when per-file would over-suppress.
 
 ### Mypy Configuration
 
@@ -129,7 +130,7 @@ Mypy is configured in strict mode with explicit flags listed for documentation. 
 ```toml
 # In pyproject.toml
 [tool.mypy]
-python_version = "3.13"
+python_version = "3.14"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
@@ -416,7 +417,7 @@ Each PR is one phase from [MVP_PLAN.md](MVP_PLAN.md) (or one logical sub-step wi
 1. **Spec traceability.** Every change traces to a section of ARCHITECTURE / CODING_RULES / TEST_PLAN / MVP_PLAN. No speculative features, no unrequested refactors.
 2. **Quality gate green.** `ruff format --check`, `ruff check`, `mypy src/`, and `pytest --cov --cov-branch --cov-fail-under=100` all pass on the PR head. CI confirms this; reviewers check that CI ran on the latest commit.
 3. **Failure paths covered.** Tests cover the error paths from the [TEST_PLAN.md "What to Test" table](TEST_PLAN.md#what-to-test), not just the happy path.
-4. **No suppression escapes.** No `# noqa`, no `# type: ignore` without an adjacent reason, no new `per-file-ignores` entries without justification, no `TODO`/`FIXME` markers (except the documented `TODO(post-mvp)` form).
+4. **No suppression escapes.** No `# noqa` or `# type: ignore` without an adjacent justifying comment (per [Ruff Suppression Policy](#ruff-suppression-policy)), no new `per-file-ignores` entries without justification and reviewer agreement, no `TODO`/`FIXME` markers (except the documented `TODO(post-mvp)` form).
 5. **History hygiene.** Single logical commit (or a short, clean series), commit message explains *why*, no merge commits from `main` into the feature branch (rebase instead).
 
 ---

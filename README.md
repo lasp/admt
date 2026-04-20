@@ -190,7 +190,7 @@ These four documents are authoritative. They define what admt does, how it is bu
 
 ## Technology Stack
 
-- **Language:** Python 3.13+
+- **Language:** Python 3.14+
 - **CLI Framework:** [Click](https://click.palletsprojects.com/)
 - **Package Management:** [uv](https://docs.astral.sh/uv/)
 - **Linting and Formatting:** [ruff](https://docs.astral.sh/ruff/)
