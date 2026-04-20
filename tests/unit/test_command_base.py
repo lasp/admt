@@ -3,7 +3,7 @@
 import pytest
 
 from admt.commands.base import Command, ContainerPassthroughCommand
-from admt.context import Context, Result
+from admt.context import Result
 
 
 def test_command_is_abstract():
@@ -31,7 +31,7 @@ def test_command_subclass_without_execute_stays_abstract():
         Incomplete()  # type: ignore[abstract]  # intentional: no execute()
 
 
-def test_minimal_concrete_command_executes():
+def test_minimal_concrete_command_executes(make_context):
     class Dummy(Command):
         name = "dummy"
         help = "dummy help"
@@ -40,11 +40,11 @@ def test_minimal_concrete_command_executes():
         def execute(self, context):
             return Result(exit_code=0)
 
-    result = Dummy().execute(Context())
+    result = Dummy().execute(make_context())
     assert result.exit_code == 0
 
 
-def test_container_passthrough_resolve_target_returns_class_attr():
+def test_container_passthrough_resolve_target_returns_class_attr(make_context):
     class Fake(ContainerPassthroughCommand):
         name = "fake"
         help = "fake"
@@ -53,10 +53,10 @@ def test_container_passthrough_resolve_target_returns_class_attr():
         def execute(self, context):
             return Result()
 
-    assert Fake().resolve_target(Context()) == "all"
+    assert Fake().resolve_target(make_context()) == "all"
 
 
-def test_container_passthrough_resolve_target_override_wins():
+def test_container_passthrough_resolve_target_override_wins(make_context):
     class Fake(ContainerPassthroughCommand):
         name = "fake"
         help = "fake"
@@ -68,5 +68,5 @@ def test_container_passthrough_resolve_target_override_wins():
         def resolve_target(self, context):
             return context.target or self.redo_target
 
-    assert Fake().resolve_target(Context(target="custom")) == "custom"
-    assert Fake().resolve_target(Context()) == "all"
+    assert Fake().resolve_target(make_context(target="custom")) == "custom"
+    assert Fake().resolve_target(make_context()) == "all"

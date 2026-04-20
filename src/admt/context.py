@@ -1,10 +1,10 @@
 """Context and Result dataclasses passed through the command pipeline.
 
-Phase 0 scope: global flags, positional arguments, and the ``noninteractive``
-marker derived from ``ADMT_NONINTERACTIVE``. The service fields
-(``config_service``, ``output``, ``container_service``, ``path_mapper``) and
-the ``resolve_container_path()`` method are added in Phase 1 when the
-corresponding services exist.
+Phase 1 scope: the global-flag/positional-arg fields plus the two services
+that are *always* available (``config_service``, ``output``). The lazily
+initialized services (``container_service``, ``path_mapper``) and
+``resolve_container_path()`` land in Phase 2 when the container service
+exists.
 """
 
 from __future__ import annotations
@@ -15,12 +15,17 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from admt.services.config import ConfigService
+    from admt.services.output import OutputService
+
 
 @dataclass
 class Context:
     """Everything a command needs to execute. Built by the CLI adapter.
 
     Attributes:
+        config_service: The active project registry -- always present.
+        output: User-facing output + prompt service -- always present.
         verbose: Echo underlying docker/redo commands before executing them.
         quiet: Suppress output on success; only errors are printed.
         debug: Implies ``verbose``; prepends ``DEBUG=1`` to redo commands.
@@ -32,6 +37,8 @@ class Context:
         run_all: ``--all``/``-a`` flag on commands that support it.
     """
 
+    config_service: ConfigService
+    output: OutputService
     verbose: bool = False
     quiet: bool = False
     debug: bool = False
