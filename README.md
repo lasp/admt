@@ -61,6 +61,22 @@ admt what
 admt templates
 ```
 
+### Development Install
+
+To install admt in editable mode from a source checkout:
+
+```bash
+# uv must be recent enough to know about Python 3.14 downloads.
+# If `uv python install 3.14` fails with "No download found", update uv first:
+uv self update         # or: brew upgrade uv
+
+# Clone, install Python 3.14, then install admt as an editable tool:
+git clone https://github.com/lasp/admt.git
+cd admt
+uv python install 3.14
+uv tool install --python 3.14 --editable .
+```
+
 ---
 
 ## Command Overview (MVP)
