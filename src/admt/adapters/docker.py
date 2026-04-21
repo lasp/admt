@@ -118,17 +118,44 @@ class DockerAdapter:
         *,
         interactive: bool = False,
         user: str = "user",
+        merge_stderr: bool = False,
+        capture_output: bool = False,
     ) -> CommandResult:
-        """Run ``command`` inside the container; streams stdio to the terminal.
+        """Run ``command`` inside the container.
 
-        ``interactive=True`` allocates a TTY and forwards stdin (for
-        ``admt env login`` and ``admt env exec`` when stdin is a terminal).
+        ``interactive=True`` allocates a TTY and forwards stdin (``admt env
+        login`` / ``admt env exec`` when stdin is a terminal).
+
+        ``merge_stderr=True`` routes the child's stderr into stdout at the
+        subprocess boundary -- used by the redo passthrough so redo's
+        human-readable output (which redo writes to stderr) follows admt's
+        stdout convention. Preserves ANSI colors because the merged stream
+        still traverses the user's TTY.
+
+        ``capture_output=True`` swaps streaming for buffered capture -- used
+        by ``--quiet`` so admt can discard output on success and emit it
+        verbatim on failure. No timeout: user-bounded build, can run
+        indefinitely.
         """
         args = ["exec", "-u", user]
         args.append("-it" if interactive else "-T")
         args.append(self.service_name)
         args.extend(command)
-        return self._run_streaming(args)
+        cmd = [*self.compose_cmd, "-f", str(self.compose_file), *args]
+        if capture_output:
+            completed = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            return CommandResult(
+                returncode=completed.returncode,
+                stdout=completed.stdout or "",
+                stderr=completed.stderr or "",
+            )
+        stderr = subprocess.STDOUT if merge_stderr else None
+        return CommandResult(returncode=self._spawn_tracked(cmd, stderr=stderr))
 
     def compose_exec_captured(self, command: list[str], *, user: str = "user") -> CommandResult:
         """Run ``command`` with captured stdout/stderr; bounded timeout.
@@ -192,10 +219,14 @@ class DockerAdapter:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _spawn_tracked(cmd: list[str]) -> int:
-        """Spawn ``cmd`` with inherited stdio, track it for SIGINT reporting."""
+    def _spawn_tracked(cmd: list[str], *, stderr: int | None = None) -> int:
+        """Spawn ``cmd`` with inherited stdio, track it for SIGINT reporting.
+
+        ``stderr`` follows ``subprocess.Popen`` semantics: ``None`` inherits
+        the parent's stderr, ``subprocess.STDOUT`` merges it into stdout.
+        """
         with _track_subprocess() as register:
-            proc = subprocess.Popen(cmd)
+            proc = subprocess.Popen(cmd, stderr=stderr)
             register(proc)
             return proc.wait()
 

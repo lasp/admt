@@ -90,6 +90,20 @@ class OutputService:
             return
         self._write(sys.stdout, self._colorize(sys.stdout, _ANSI_DIM, f"$ {command}"))
 
+    def emit_captured(self, content: str, *, to_stderr: bool = False) -> None:
+        """Emit captured subprocess output verbatim, bypassing ``--quiet``.
+
+        Used by the passthrough commands so that a failed redo invocation in
+        ``--quiet`` mode still shows the captured output (otherwise the user
+        sees only an exit code with no explanation).
+        """
+        if not content:
+            return
+        stream = sys.stderr if to_stderr else sys.stdout
+        stream.write(content)
+        if not content.endswith("\n"):
+            stream.write("\n")
+
     def prompt(self, message: str, *, default: bool | None = True) -> bool:
         """Ask a yes/no question; return the answer.
 

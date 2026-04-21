@@ -213,3 +213,33 @@ def test_info_is_never_colored(capsys):
         _svc().info("plain info")
     captured = capsys.readouterr()
     assert "\033[" not in captured.out
+
+
+# ----- emit_captured -----
+
+
+def test_emit_captured_writes_to_stdout_by_default(capsys):
+    _svc(quiet=True).emit_captured("some captured text\n")
+    captured = capsys.readouterr()
+    # Bypasses --quiet.
+    assert captured.out == "some captured text\n"
+
+
+def test_emit_captured_routes_to_stderr_when_requested(capsys):
+    _svc(quiet=True).emit_captured("oops\n", to_stderr=True)
+    captured = capsys.readouterr()
+    assert captured.err == "oops\n"
+    assert captured.out == ""
+
+
+def test_emit_captured_adds_trailing_newline_when_missing(capsys):
+    _svc().emit_captured("no newline")
+    captured = capsys.readouterr()
+    assert captured.out == "no newline\n"
+
+
+def test_emit_captured_empty_is_noop(capsys):
+    _svc().emit_captured("")
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""

@@ -287,7 +287,16 @@ def test_login_runs_bare_bash_interactive(svc, docker):
 # ----- exec + snapshot proxy -----
 
 
+def _prime_running(docker):
+    """Make ``is_running`` report True so ``exec`` doesn't prompt."""
+    docker.compose_ps.return_value = CommandResult(
+        returncode=0,
+        stdout='{"Service": "myproj", "State": "running"}\n',
+    )
+
+
 def test_exec_ensures_snapshot_then_runs_via_proxy(svc, docker):
+    _prime_running(docker)
     # Snapshot already exists -> ensure_env_snapshot returns quickly.
     docker.compose_exec_captured.return_value = _ok()
     docker.compose_exec.return_value = CommandResult(returncode=0)
@@ -298,14 +307,167 @@ def test_exec_ensures_snapshot_then_runs_via_proxy(svc, docker):
     # Container-side path inside the sandboxed /tmp/admt/<project>/ directory.
     assert args[0] == "/tmp/admt/myproj/exec.sh"  # noqa: S108 -- container path
     assert args[1:] == ["bash", "-c", "echo hi"]
-    assert call.kwargs == {"interactive": False}
+    assert call.kwargs == {
+        "interactive": False,
+        "merge_stderr": False,
+        "capture_output": False,
+    }
 
 
 def test_exec_propagates_interactive_flag(svc, docker):
+    _prime_running(docker)
     docker.compose_exec_captured.return_value = _ok()
     docker.compose_exec.return_value = CommandResult(returncode=0)
     svc.exec("bash", interactive=True)
     assert docker.compose_exec.call_args.kwargs["interactive"] is True
+
+
+def test_exec_threads_merge_stderr(svc, docker):
+    _prime_running(docker)
+    docker.compose_exec_captured.return_value = _ok()
+    docker.compose_exec.return_value = CommandResult(returncode=0)
+    svc.exec("redo all", merge_stderr=True)
+    assert docker.compose_exec.call_args.kwargs["merge_stderr"] is True
+
+
+def test_exec_captures_output_and_emits_on_failure(docker, capsys):
+
+    svc = ContainerService(
+        docker=docker,
+        project=_project(),
+        output=OutputService(verbose=False, quiet=True, yes=True, noninteractive=True),
+    )
+    _prime_running(docker)
+    docker.compose_exec_captured.return_value = _ok()
+    docker.compose_exec.return_value = CommandResult(
+        returncode=2, stdout="captured stdout\n", stderr="captured stderr\n"
+    )
+    failing_exit = 2
+    exit_code = svc.exec("redo all", merge_stderr=True, capture_output=True)
+    assert exit_code == failing_exit
+    captured = capsys.readouterr()
+    # emit_captured bypasses --quiet so the user sees why the command failed.
+    assert "captured stdout" in captured.out
+    assert "captured stderr" in captured.err
+
+
+def test_exec_captured_failure_with_stdout_only(docker, capsys):
+    """Empty stderr must not be emitted (``if result.stderr:`` branch)."""
+    svc = ContainerService(
+        docker=docker,
+        project=_project(),
+        output=OutputService(verbose=False, quiet=True, yes=True, noninteractive=True),
+    )
+    _prime_running(docker)
+    docker.compose_exec_captured.return_value = _ok()
+    docker.compose_exec.return_value = CommandResult(
+        returncode=1, stdout="only stdout\n", stderr=""
+    )
+    svc.exec("redo all", capture_output=True)
+    captured = capsys.readouterr()
+    assert captured.out == "only stdout\n"
+    assert captured.err == ""
+
+
+def test_exec_captured_failure_with_stderr_only(docker, capsys):
+    """Empty stdout must not be emitted (``if result.stdout:`` branch)."""
+    svc = ContainerService(
+        docker=docker,
+        project=_project(),
+        output=OutputService(verbose=False, quiet=True, yes=True, noninteractive=True),
+    )
+    _prime_running(docker)
+    docker.compose_exec_captured.return_value = _ok()
+    docker.compose_exec.return_value = CommandResult(
+        returncode=1, stdout="", stderr="only stderr\n"
+    )
+    svc.exec("redo all", capture_output=True)
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "only stderr\n"
+
+
+def test_exec_captures_output_suppresses_on_success(docker, capsys):
+
+    svc = ContainerService(
+        docker=docker,
+        project=_project(),
+        output=OutputService(verbose=False, quiet=True, yes=True, noninteractive=True),
+    )
+    _prime_running(docker)
+    docker.compose_exec_captured.return_value = _ok()
+    docker.compose_exec.return_value = CommandResult(returncode=0, stdout="quiet success output\n")
+    exit_code = svc.exec("redo all", merge_stderr=True, capture_output=True)
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    # Success + quiet = silent.
+    assert captured.out == ""
+    assert captured.err == ""
+
+
+# ----- ensure_running -----
+
+
+def test_ensure_running_noop_when_already_running(svc, docker):
+    _prime_running(docker)
+    svc.ensure_running()
+    docker.compose_up.assert_not_called()
+
+
+def test_ensure_running_autostarts_when_yes(docker):
+
+    svc = ContainerService(
+        docker=docker,
+        project=_project(),
+        output=OutputService(verbose=False, quiet=True, yes=True, noninteractive=False),
+    )
+    docker.compose_ps.return_value = CommandResult(returncode=0, stdout="")  # not found
+    docker.image_name.return_value = None
+    docker.compose_up.return_value = _ok()
+    docker.compose_exec_captured.return_value = _ok()
+    svc.ensure_running()
+    docker.compose_up.assert_called_once()
+
+
+def test_ensure_running_errors_in_noninteractive_mode(docker):
+
+    svc = ContainerService(
+        docker=docker,
+        project=_project(),
+        output=OutputService(verbose=False, quiet=True, yes=False, noninteractive=True),
+    )
+    docker.compose_ps.return_value = CommandResult(returncode=0, stdout="")
+    with pytest.raises(ContainerError, match="admt env start"):
+        svc.ensure_running()
+
+
+def test_ensure_running_raises_when_user_declines(docker, monkeypatch):
+
+    svc = ContainerService(
+        docker=docker,
+        project=_project(),
+        output=OutputService(verbose=False, quiet=True, yes=False, noninteractive=False),
+    )
+    docker.compose_ps.return_value = CommandResult(returncode=0, stdout="")
+    monkeypatch.setattr("builtins.input", lambda _prompt: "n")
+    with pytest.raises(ContainerError, match="Declined"):
+        svc.ensure_running()
+
+
+def test_ensure_running_starts_when_user_accepts_prompt(docker, monkeypatch):
+
+    svc = ContainerService(
+        docker=docker,
+        project=_project(),
+        output=OutputService(verbose=False, quiet=True, yes=False, noninteractive=False),
+    )
+    docker.compose_ps.return_value = CommandResult(returncode=0, stdout="")
+    docker.image_name.return_value = None
+    docker.compose_up.return_value = _ok()
+    docker.compose_exec_captured.return_value = _ok()
+    monkeypatch.setattr("builtins.input", lambda _prompt: "y")
+    svc.ensure_running()
+    docker.compose_up.assert_called_once()
 
 
 def test_ensure_env_snapshot_no_op_when_proxy_exists(svc, docker):
