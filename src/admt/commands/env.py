@@ -1,21 +1,25 @@
-"""admt env subcommands: register projects and switch the active one.
+"""admt env subcommands -- project registry + container lifecycle.
 
-Phase 1 surface: ``admt env init [path]`` and ``admt env use <name>``. The
-remaining env subcommands (``start``, ``stop``, ``login``, etc.) land in
-Phase 2 once the container service is available.
+Phase 1 landed ``init``/``use``. Phase 2 adds ``start``/``stop``/``restart``/
+``login``/``status``/``build``/``push``/``pull``/``exec``/``refresh``/``rm``/
+``list``. Most require a live ``ContainerService`` (wired lazily by the CLI
+adapter when ``requires_container`` is ``True``); ``list`` and the Phase 1
+commands only need the config registry.
 """
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
 from admt.commands.base import Command
 from admt.context import Result
-from admt.exceptions import ArgumentError
+from admt.exceptions import ArgumentError, ContainerError
 
 if TYPE_CHECKING:
     from admt.context import Context
+    from admt.services.container import ContainerService
 
 
 class EnvInitCommand(Command):
@@ -96,4 +100,228 @@ class EnvUseCommand(Command):
         """Set the active project and report the new state."""
         context.config_service.set_active_project(self._project_name)
         context.output.info(f"Active project: {self._project_name}")
+        return Result(exit_code=0)
+
+
+def _require_container(context: Context) -> ContainerService:
+    """Return ``context.container_service`` or raise a clear error."""
+    if context.container_service is None:
+        msg = "ContainerService was not wired for this command (CLI bug)."
+        raise ContainerError(msg)
+    return context.container_service
+
+
+class EnvStartCommand(Command):
+    """Start the project container (auto-pulls image when missing)."""
+
+    name: ClassVar[str] = "env start"
+    help: ClassVar[str] = "Start the project container."
+    requires_project: ClassVar[bool] = True
+    requires_container: ClassVar[bool] = True
+
+    def execute(self, context: Context) -> Result:
+        """Delegate to the ContainerService."""
+        _require_container(context).start()
+        return Result(exit_code=0)
+
+
+class EnvStopCommand(Command):
+    """Stop the project container."""
+
+    name: ClassVar[str] = "env stop"
+    help: ClassVar[str] = "Stop the project container."
+    requires_project: ClassVar[bool] = True
+    requires_container: ClassVar[bool] = True
+
+    def execute(self, context: Context) -> Result:
+        """Delegate to the ContainerService."""
+        _require_container(context).stop()
+        return Result(exit_code=0)
+
+
+class EnvRestartCommand(Command):
+    """Restart the project container (stop + start)."""
+
+    name: ClassVar[str] = "env restart"
+    help: ClassVar[str] = "Restart the project container (stop + start)."
+    requires_project: ClassVar[bool] = True
+    requires_container: ClassVar[bool] = True
+
+    def execute(self, context: Context) -> Result:
+        """Delegate to the ContainerService."""
+        _require_container(context).restart()
+        return Result(exit_code=0)
+
+
+class EnvLoginCommand(Command):
+    """Open an interactive bash shell in the container."""
+
+    name: ClassVar[str] = "env login"
+    help: ClassVar[str] = "Open an interactive shell in the project container."
+    requires_project: ClassVar[bool] = True
+    requires_container: ClassVar[bool] = True
+
+    def execute(self, context: Context) -> Result:
+        """Hand control to the interactive shell; propagate its exit code."""
+        return Result(exit_code=_require_container(context).login())
+
+
+class EnvStatusCommand(Command):
+    """Report the project container's status."""
+
+    name: ClassVar[str] = "env status"
+    help: ClassVar[str] = "Show container status."
+    requires_project: ClassVar[bool] = True
+    requires_container: ClassVar[bool] = True
+
+    def execute(self, context: Context) -> Result:
+        """Print project name, container name, and status."""
+        container = _require_container(context)
+        project = context.config_service.get_active_project()
+        context.output.info(f"Project: {project.name}")
+        context.output.info(f"Container: {project.container_name}")
+        context.output.info(f"Status: {container.status().value}")
+        return Result(exit_code=0)
+
+
+class EnvBuildCommand(Command):
+    """Build the Docker image for the active project."""
+
+    name: ClassVar[str] = "env build"
+    help: ClassVar[str] = "Build the Docker image."
+    requires_project: ClassVar[bool] = True
+    requires_container: ClassVar[bool] = True
+
+    def execute(self, context: Context) -> Result:
+        """Delegate to the ContainerService."""
+        _require_container(context).build_image()
+        return Result(exit_code=0)
+
+
+class EnvPushCommand(Command):
+    """Push the Docker image to its registry."""
+
+    name: ClassVar[str] = "env push"
+    help: ClassVar[str] = "Push the Docker image."
+    requires_project: ClassVar[bool] = True
+    requires_container: ClassVar[bool] = True
+
+    def execute(self, context: Context) -> Result:
+        """Delegate to the ContainerService."""
+        _require_container(context).push_image()
+        return Result(exit_code=0)
+
+
+class EnvPullCommand(Command):
+    """Pull the Docker image from its registry."""
+
+    name: ClassVar[str] = "env pull"
+    help: ClassVar[str] = "Pull the Docker image."
+    requires_project: ClassVar[bool] = True
+    requires_container: ClassVar[bool] = True
+
+    def execute(self, context: Context) -> Result:
+        """Delegate to the ContainerService."""
+        _require_container(context).pull_image()
+        return Result(exit_code=0)
+
+
+class EnvExecCommand(Command):
+    """Run an arbitrary command in the container via the admt env proxy."""
+
+    name: ClassVar[str] = "env exec"
+    help: ClassVar[str] = "Run a command inside the container."
+    requires_project: ClassVar[bool] = True
+    requires_container: ClassVar[bool] = True
+
+    def __init__(self, command: str) -> None:
+        """Capture the shell command to run in the container."""
+        self._command = command
+
+    def execute(self, context: Context) -> Result:
+        """Forward to the container through the env-snapshot proxy script."""
+        interactive = os.isatty(0) and not context.noninteractive
+        exit_code = _require_container(context).exec(self._command, interactive=interactive)
+        return Result(exit_code=exit_code)
+
+
+class EnvRefreshCommand(Command):
+    """Regenerate the admt environment snapshot inside the container."""
+
+    name: ClassVar[str] = "env refresh"
+    help: ClassVar[str] = "Re-run env/activate and rebuild the admt env snapshot."
+    requires_project: ClassVar[bool] = True
+    requires_container: ClassVar[bool] = True
+
+    def execute(self, context: Context) -> Result:
+        """Delegate to the ContainerService."""
+        _require_container(context).refresh()
+        return Result(exit_code=0)
+
+
+class EnvRmCommand(Command):
+    """Remove the project container (optionally volumes and/or image)."""
+
+    name: ClassVar[str] = "env rm"
+    help: ClassVar[str] = "Remove the project container."
+    requires_project: ClassVar[bool] = True
+    requires_container: ClassVar[bool] = True
+
+    def __init__(
+        self,
+        *,
+        remove_volumes: bool = False,
+        remove_image: bool = False,
+        remove_all: bool = False,
+    ) -> None:
+        """Capture the scope flags."""
+        self._remove_volumes = remove_volumes
+        self._remove_image = remove_image
+        self._remove_all = remove_all
+
+    def execute(self, context: Context) -> Result:
+        """Prompt for confirmation unless ``--yes``, then delegate removal."""
+        project = context.config_service.get_active_project()
+        scope = self._describe_scope()
+        if not context.output.prompt(
+            f"Remove container '{project.container_name}' ({scope})?", default=False
+        ):
+            context.output.info("Aborted.")
+            return Result(exit_code=0)
+        _require_container(context).rm(
+            remove_volumes=self._remove_volumes,
+            remove_image=self._remove_image,
+            remove_all=self._remove_all,
+        )
+        return Result(exit_code=0)
+
+    def _describe_scope(self) -> str:
+        if self._remove_all:
+            return "container + volumes + image"
+        parts = ["container"]
+        if self._remove_volumes:
+            parts.append("volumes")
+        if self._remove_image:
+            parts.append("image")
+        return " + ".join(parts)
+
+
+class EnvListCommand(Command):
+    """List registered projects, marking the active one."""
+
+    name: ClassVar[str] = "env list"
+    help: ClassVar[str] = "List registered projects."
+    requires_project: ClassVar[bool] = False
+
+    def execute(self, context: Context) -> Result:
+        """Render ``name  compose_file`` lines; prefix the active project with ``*``."""
+        projects = context.config_service.list_projects()
+        if not projects:
+            context.output.info("No projects registered. Run 'admt env init' to set one up.")
+            return Result(exit_code=0)
+        active = context.config_service.load().active_project
+        width = max(len(name) for name in projects)
+        for name in sorted(projects):
+            marker = "*" if name == active else " "
+            context.output.info(f"{marker} {name:<{width}}  {projects[name].compose_file}")
         return Result(exit_code=0)

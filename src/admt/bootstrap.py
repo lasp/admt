@@ -1,8 +1,9 @@
 """Service wiring for the admt CLI.
 
 Lives outside ``cli.py`` so that the architectural size cap on CLI callbacks
-is not strained by service instantiation. Called once by the top-level CLI
-group callback to produce a fully populated ``Context``.
+is not strained by service instantiation. ``build_context`` is called once
+by the top-level CLI group; ``build_container_service`` is called lazily by
+``cli._run_command`` for commands that opt in via ``requires_container``.
 """
 
 from __future__ import annotations
@@ -10,9 +11,11 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from admt.adapters.docker import DockerAdapter
 from admt.adapters.yaml_adapter import YamlAdapter
 from admt.context import Context
 from admt.services.config import ConfigService
+from admt.services.container import ContainerService
 from admt.services.output import OutputService
 
 
@@ -47,3 +50,18 @@ def build_context(
         force=force,
         noninteractive=noninteractive,
     )
+
+
+def build_container_service(context: Context) -> ContainerService:
+    """Resolve the active project and wire a ContainerService for it.
+
+    Raises ``ConfigError`` via ``get_active_project`` when no project is
+    configured -- callers should let that propagate so the CLI adapter
+    formats the standard "run 'admt env init'" error.
+    """
+    project = context.config_service.get_active_project()
+    docker = DockerAdapter(
+        compose_file=project.compose_file,
+        service_name=project.service_name,
+    )
+    return ContainerService(docker=docker, project=project, output=context.output)

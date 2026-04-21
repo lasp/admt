@@ -1,5 +1,6 @@
-"""Tests for OutputService -- routing, prompts, and choices."""
+"""Tests for OutputService -- routing, prompts, choices, echo, color."""
 
+import os
 from unittest.mock import patch
 
 import pytest
@@ -143,3 +144,72 @@ def test_choose_prompts_until_valid(capsys):
     assert "[1] alpha" in captured.out
     assert "[2] beta" in captured.out
     assert "Enter a number between 1 and 2" in captured.err
+
+
+# ----- command_echo -----
+
+
+def test_command_echo_emits_when_verbose(capsys):
+    _svc(verbose=True).command_echo("docker compose up -d")
+    captured = capsys.readouterr()
+    assert "$ docker compose up -d" in captured.out
+
+
+def test_command_echo_silent_when_not_verbose(capsys):
+    _svc().command_echo("docker compose up -d")
+    assert capsys.readouterr().out == ""
+
+
+def test_command_echo_silent_when_quiet(capsys):
+    _svc(verbose=True, quiet=True).command_echo("docker compose up -d")
+    assert capsys.readouterr().out == ""
+
+
+# ----- ANSI color handling -----
+
+
+def test_success_emits_green_when_stdout_is_tty(capsys):
+    with patch("sys.stdout.isatty", return_value=True), patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("NO_COLOR", None)
+        _svc().success("all good")
+    captured = capsys.readouterr()
+    assert "\033[32m" in captured.out
+    assert "\033[0m" in captured.out
+
+
+def test_warning_emits_yellow_when_stderr_is_tty(capsys):
+    with patch("sys.stderr.isatty", return_value=True), patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("NO_COLOR", None)
+        _svc().warning("heads up")
+    captured = capsys.readouterr()
+    assert "\033[33m" in captured.err
+
+
+def test_error_emits_red_when_stderr_is_tty(capsys):
+    with patch("sys.stderr.isatty", return_value=True), patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("NO_COLOR", None)
+        _svc().error("nope")
+    captured = capsys.readouterr()
+    assert "\033[31m" in captured.err
+
+
+def test_color_suppressed_when_no_tty(capsys):
+    # pytest's capsys replaces stdout with a non-TTY capture; no color expected.
+    _svc().success("plain")
+    captured = capsys.readouterr()
+    assert "\033[" not in captured.out
+
+
+def test_color_suppressed_by_no_color_env(capsys, monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    with patch("sys.stdout.isatty", return_value=True):
+        _svc().success("plain")
+    captured = capsys.readouterr()
+    assert "\033[" not in captured.out
+
+
+def test_info_is_never_colored(capsys):
+    with patch("sys.stdout.isatty", return_value=True):
+        _svc().info("plain info")
+    captured = capsys.readouterr()
+    assert "\033[" not in captured.out
