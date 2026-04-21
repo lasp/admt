@@ -352,7 +352,7 @@ def test_exec_captures_output_and_emits_on_failure(docker, capsys):
 
 
 def test_exec_captured_failure_with_stdout_only(docker, capsys):
-    """Empty stderr must not be emitted (``if result.stderr:`` branch)."""
+    """Empty stderr branch: emit_captured skips stderr, failed-cmd diagnostic fires."""
     svc = ContainerService(
         docker=docker,
         project=_project(),
@@ -365,12 +365,65 @@ def test_exec_captured_failure_with_stdout_only(docker, capsys):
     )
     svc.exec("redo all", capture_output=True)
     captured = capsys.readouterr()
-    assert captured.out == "only stdout\n"
-    assert captured.err == ""
+    # Captured stdout is rendered verbatim on failure.
+    assert "only stdout\n" in captured.out
+    # The Phase 5 "failed command" diagnostic lands on stderr; no captured
+    # stderr was provided, so that's the only thing there.
+    assert "Failed (exit 1)" in captured.err
+
+
+def test_exec_failed_command_diagnostic_non_verbose(docker, capsys):
+    """Without --verbose, a failed exec still shows the command that ran."""
+    failing_exit = 5
+    svc = ContainerService(
+        docker=docker,
+        project=_project(),
+        output=OutputService(verbose=False, quiet=False, yes=True, noninteractive=True),
+    )
+    _prime_running(docker)
+    docker.compose_exec_captured.return_value = _ok()
+    docker.compose_exec.return_value = CommandResult(returncode=failing_exit)
+    exit_code = svc.exec("redo all")
+    assert exit_code == failing_exit
+    captured = capsys.readouterr()
+    assert f"Failed (exit {failing_exit})" in captured.err
+    assert "redo all" in captured.err
+
+
+def test_exec_successful_command_no_diagnostic(docker, capsys):
+    """Success path: no "Failed" line."""
+    svc = ContainerService(
+        docker=docker,
+        project=_project(),
+        output=OutputService(verbose=False, quiet=False, yes=True, noninteractive=True),
+    )
+    _prime_running(docker)
+    docker.compose_exec_captured.return_value = _ok()
+    docker.compose_exec.return_value = CommandResult(returncode=0)
+    svc.exec("redo all")
+    captured = capsys.readouterr()
+    assert "Failed" not in captured.err
+
+
+def test_exec_verbose_failure_does_not_double_echo(docker, capsys):
+    """Verbose already echoed pre-exec; don't duplicate on failure."""
+    svc = ContainerService(
+        docker=docker,
+        project=_project(),
+        output=OutputService(verbose=True, quiet=False, yes=True, noninteractive=True),
+    )
+    _prime_running(docker)
+    docker.compose_exec_captured.return_value = _ok()
+    docker.compose_exec.return_value = CommandResult(returncode=5)
+    svc.exec("redo all")
+    captured = capsys.readouterr()
+    # Verbose path already printed via command_echo; the Phase 5 diagnostic
+    # on stderr is suppressed to avoid duplication.
+    assert "Failed (exit 5)" not in captured.err
 
 
 def test_exec_captured_failure_with_stderr_only(docker, capsys):
-    """Empty stdout must not be emitted (``if result.stdout:`` branch)."""
+    """Empty stdout branch: emit_captured skips stdout; diagnostic still fires."""
     svc = ContainerService(
         docker=docker,
         project=_project(),
@@ -384,7 +437,8 @@ def test_exec_captured_failure_with_stderr_only(docker, capsys):
     svc.exec("redo all", capture_output=True)
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert captured.err == "only stderr\n"
+    assert "only stderr\n" in captured.err
+    assert "Failed (exit 1)" in captured.err
 
 
 def test_exec_captures_output_suppresses_on_success(docker, capsys):
@@ -452,6 +506,46 @@ def test_ensure_running_raises_when_user_declines(docker, monkeypatch):
     monkeypatch.setattr("builtins.input", lambda _prompt: "n")
     with pytest.raises(ContainerError, match="Declined"):
         svc.ensure_running()
+
+
+def test_verbose_echoes_compose_up_on_start(docker, capsys):
+    svc = ContainerService(
+        docker=docker,
+        project=_project(),
+        output=OutputService(verbose=True, quiet=False, yes=False, noninteractive=False),
+    )
+    docker.image_name.return_value = None
+    docker.compose_up.return_value = _ok()
+    docker.compose_exec_captured.return_value = _ok()
+    svc.start()
+    captured = capsys.readouterr()
+    assert "docker compose -f" in captured.out
+    assert "up -d" in captured.out
+
+
+def test_verbose_echoes_compose_stop_on_stop(docker, capsys):
+    svc = ContainerService(
+        docker=docker,
+        project=_project(),
+        output=OutputService(verbose=True, quiet=False, yes=False, noninteractive=False),
+    )
+    docker.compose_stop.return_value = _ok()
+    svc.stop()
+    captured = capsys.readouterr()
+    assert "docker compose -f" in captured.out
+    assert "stop" in captured.out
+
+
+def test_verbose_echoes_down_v_when_removing_volumes(docker, capsys):
+    svc = ContainerService(
+        docker=docker,
+        project=_project(),
+        output=OutputService(verbose=True, quiet=False, yes=True, noninteractive=False),
+    )
+    docker.compose_down.return_value = _ok()
+    svc.rm(remove_volumes=True)
+    captured = capsys.readouterr()
+    assert "down -v" in captured.out
 
 
 def test_ensure_running_starts_when_user_accepts_prompt(docker, monkeypatch):

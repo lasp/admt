@@ -85,8 +85,14 @@ class OutputService:
         self._write(sys.stderr, self._colorize(sys.stderr, _ANSI_RED, message))
 
     def command_echo(self, command: str) -> None:
-        """Print ``$ <command>`` to stdout when verbose mode is active."""
-        if not self._verbose or self._quiet:
+        """Print ``$ <command>`` to stdout when verbose mode is active.
+
+        Intentionally ignores ``--quiet``: per ARCHITECTURE §TTY, ``-v -q``
+        together means "print the underlying commands but suppress their
+        output." The subprocess output is captured separately in capture
+        mode -- the command echo is admt's own diagnostic.
+        """
+        if not self._verbose:
             return
         self._write(sys.stdout, self._colorize(sys.stdout, _ANSI_DIM, f"$ {command}"))
 

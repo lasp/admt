@@ -243,3 +243,29 @@ def test_passthrough_without_active_project_errors(tmp_path):
     result = runner.invoke(cli, ["build"], env=_env_vars(tmp_path))
     assert result.exit_code == ConfigError.exit_code
     assert "No project configured" in result.output
+
+
+# ----- Phase 5 flag matrix (passthrough) -----
+
+
+def test_verbose_and_quiet_combined_echoes_but_captures(
+    registered, mock_container, tmp_path, monkeypatch
+):
+    """``-v -q`` echoes the command to stdout AND captures subprocess output (quiet)."""
+    root, runner = registered
+    monkeypatch.chdir(root)
+    result = runner.invoke(cli, ["-v", "-q", "build"], env=_env_vars(tmp_path))
+    assert result.exit_code == 0, result.output
+    # capture_output was turned on (quiet).
+    assert mock_container.exec.call_args.kwargs["capture_output"] is True
+
+
+def test_force_flag_accepted_on_passthrough_build(
+    registered, mock_container, tmp_path, monkeypatch
+):
+    """``--force`` is accepted on passthrough commands (no-op but parses)."""
+    root, runner = registered
+    monkeypatch.chdir(root)
+    result = runner.invoke(cli, ["-f", "build"], env=_env_vars(tmp_path))
+    assert result.exit_code == 0, result.output
+    assert mock_container.exec.called

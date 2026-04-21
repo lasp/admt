@@ -63,16 +63,19 @@ class ContainerService:
         image = self._docker.image_name()
         if image and not self._docker.image_exists_locally(image):
             self._output.info(f"Image '{image}' not present locally; pulling...")
+            self._echo_compose("pull")
             pull = self._docker.compose_pull()
             if pull.returncode != 0:
                 msg = f"Pull failed for '{image}'. Build the image locally with 'admt env build'."
                 raise ContainerError(msg)
+        self._echo_compose("up -d")
         self._raise_on_failure("up", self._docker.compose_up())
         self.ensure_env_snapshot()
         self._output.success(f"Container '{self._project.container_name}' is running.")
 
     def stop(self) -> None:
         """Stop the container (does not remove it)."""
+        self._echo_compose("stop")
         self._raise_on_failure("stop", self._docker.compose_stop())
         self._output.success(f"Container '{self._project.container_name}' stopped.")
 
@@ -87,9 +90,7 @@ class ContainerService:
         Bypasses the admt proxy script; the container's ``.bashrc`` already
         sources ``env/activate`` (or the admt snapshot) on login.
         """
-        self._output.command_echo(
-            f"docker compose exec -it -u user {self._project.service_name} /bin/bash"
-        )
+        self._echo_compose(f"exec -it -u user {self._project.service_name} /bin/bash")
         return self._docker.compose_exec(["/bin/bash"], interactive=True).returncode
 
     def status(self) -> ContainerStatus:
@@ -116,14 +117,17 @@ class ContainerService:
 
     def build_image(self) -> None:
         """``docker compose build`` for the active service."""
+        self._echo_compose("build")
         self._raise_on_failure("build", self._docker.compose_build())
 
     def push_image(self) -> None:
         """``docker compose push`` for the active service."""
+        self._echo_compose("push")
         self._raise_on_failure("push", self._docker.compose_push())
 
     def pull_image(self) -> None:
         """``docker compose pull`` for the active service."""
+        self._echo_compose("pull")
         self._raise_on_failure("pull", self._docker.compose_pull())
 
     def rm(
@@ -137,6 +141,8 @@ class ContainerService:
         if remove_all:
             remove_volumes = True
             remove_image = True
+        down_subcommand = "down -v" if remove_volumes else "down"
+        self._echo_compose(down_subcommand)
         self._raise_on_failure("down", self._docker.compose_down(remove_volumes=remove_volumes))
         if remove_image:
             image_result = self._docker.remove_image()
@@ -189,9 +195,10 @@ class ContainerService:
         self.ensure_running()
         self.ensure_env_snapshot()
         proxy = self._proxy_path()
-        self._output.command_echo(
+        echo_str = (
             f"docker compose exec -u user {self._project.service_name} {proxy} bash -c {command!r}"
         )
+        self._output.command_echo(echo_str)
         result = self._docker.compose_exec(
             [proxy, "bash", "-c", command],
             interactive=interactive,
@@ -203,6 +210,12 @@ class ContainerService:
                 self._output.emit_captured(result.stdout)
             if result.stderr:
                 self._output.emit_captured(result.stderr, to_stderr=True)
+        # Per ARCHITECTURE R11: "the underlying command is always shown, even
+        # without --verbose. Every container-forwarded operation reports what
+        # ran when it fails." Already shown on the verbose path before exec;
+        # echo again here for non-verbose users so they don't have to re-run.
+        if result.returncode != 0 and not self._output.verbose:
+            self._output.error(f"Failed (exit {result.returncode}): {echo_str}")
         return result.returncode
 
     def refresh(self) -> None:
@@ -226,6 +239,10 @@ class ContainerService:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _echo_compose(self, subcommand: str) -> None:
+        """Emit ``$ docker compose -f <compose_file> <subcommand>`` when verbose."""
+        self._output.command_echo(f"docker compose -f {self._project.compose_file} {subcommand}")
 
     def _project_tmp_dir(self) -> str:
         return f"/tmp/admt/{self._project.name}"  # noqa: S108 -- container-side path
