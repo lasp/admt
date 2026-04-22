@@ -14,3 +14,4 @@ class CoverageCommand(ContainerPassthroughCommand):
     help: ClassVar[str] = "Generate coverage reports (redo coverage; --all for coverage_all)."
     redo_target: ClassVar[str] = "coverage"
     supports_all: ClassVar[bool] = True
+    status_verb: ClassVar[str | None] = "generating coverage"

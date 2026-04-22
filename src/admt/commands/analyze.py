@@ -14,3 +14,4 @@ class AnalyzeCommand(ContainerPassthroughCommand):
     help: ClassVar[str] = "Run static analysis (redo analyze; --all for analyze_all)."
     redo_target: ClassVar[str] = "analyze"
     supports_all: ClassVar[bool] = True
+    status_verb: ClassVar[str | None] = "analyzing"

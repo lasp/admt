@@ -246,6 +246,34 @@ class ContainerService:
             self._output.error(f"Failed (exit {result.returncode}): {echo_str}")
         return result.returncode
 
+    def exec_captured(self, command: str, *, merge_stderr: bool = True) -> CommandResult:
+        """Run ``command`` and return the captured ``CommandResult``.
+
+        Like ``exec`` but always captures output and returns the full result
+        so callers can post-process it. Used by ``admt what`` to translate
+        the redo target listing into admt-command equivalents.
+        """
+        proxy = self._proxy_path()
+        echo_str = f"docker exec -u user {self._project.container_name} {proxy} bash -c {command!r}"
+        self._output.command_echo(echo_str)
+        result = self._docker.docker_exec(
+            [proxy, "bash", "-c", command],
+            interactive=False,
+            merge_stderr=merge_stderr,
+            capture_output=True,
+        )
+        if result.returncode != 0 and self._recover_infrastructure():
+            self._output.command_echo(echo_str)
+            result = self._docker.docker_exec(
+                [proxy, "bash", "-c", command],
+                interactive=False,
+                merge_stderr=merge_stderr,
+                capture_output=True,
+            )
+        if result.returncode != 0 and not self._output.verbose:
+            self._output.error(f"Failed (exit {result.returncode}): {echo_str}")
+        return result
+
     def _recover_infrastructure(self) -> bool:
         """Diagnose a failed exec and fix recoverable infrastructure state.
 

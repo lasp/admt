@@ -365,6 +365,76 @@ def test_exec_successful_command_no_diagnostic(docker, capsys):
     assert "Failed" not in captured.err
 
 
+def test_exec_captured_returns_full_command_result(docker):
+    """exec_captured returns the raw CommandResult so callers can post-process."""
+    svc = ContainerService(
+        docker=docker,
+        project=_project(),
+        output=OutputService(verbose=False, quiet=False, yes=True, noninteractive=True),
+    )
+    _prime_running(docker)
+    docker.docker_exec_captured.return_value = _ok()
+    docker.docker_exec.return_value = CommandResult(returncode=0, stdout="payload\n")
+    result = svc.exec_captured("redo what")
+    assert result.returncode == 0
+    assert result.stdout == "payload\n"
+    # Always-captured: docker_exec was called with capture_output=True.
+    assert docker.docker_exec.call_args.kwargs["capture_output"] is True
+    # And merge_stderr=True by default (for the WhatCommand use-case).
+    assert docker.docker_exec.call_args.kwargs["merge_stderr"] is True
+
+
+def test_exec_captured_failure_prints_diagnostic_when_non_verbose(docker, capsys):
+    failing_exit = 2
+    svc = ContainerService(
+        docker=docker,
+        project=_project(),
+        output=OutputService(verbose=False, quiet=False, yes=True, noninteractive=True),
+    )
+    _prime_running(docker)
+    docker.docker_exec_captured.return_value = _ok()
+    docker.docker_exec.return_value = CommandResult(returncode=failing_exit, stdout="")
+    result = svc.exec_captured("redo what")
+    assert result.returncode == failing_exit
+    assert f"Failed (exit {failing_exit})" in capsys.readouterr().err
+
+
+def test_exec_captured_recovers_via_infrastructure_check(docker):
+    """First exec_captured fails; infra recovery succeeds; retried call succeeds."""
+    svc = ContainerService(
+        docker=docker,
+        project=_project(),
+        output=OutputService(verbose=False, quiet=False, yes=True, noninteractive=True),
+    )
+    # is_running initially True, snapshot check says snapshot missing -> regenerate.
+    # Simulate: first docker_exec fails, then _recover_infrastructure returns True
+    # because snapshot was missing; second docker_exec succeeds.
+    docker.docker_inspect_state.return_value = CommandResult(returncode=0, stdout="running\n")
+    # First snapshot check returns missing (non-zero); subsequent calls succeed.
+    docker.docker_exec_captured.side_effect = [
+        _fail(code=1),  # snapshot test -f fails (triggers regen)
+        _ok(),  # env capture baseline
+        _ok(),  # env capture activated
+        _ok(),  # chmod +x
+    ]
+    docker.docker_exec_with_stdin.return_value = _ok()
+    # First docker_exec fails (triggers recovery), second succeeds.
+    docker.docker_exec.side_effect = [
+        CommandResult(returncode=1),
+        CommandResult(returncode=0, stdout="payload\n"),
+    ]
+    # Seed capture_env to return something parseable.
+    docker.docker_exec_captured.side_effect = [
+        _fail(code=1),
+        CommandResult(returncode=0, stdout="PATH=/usr/bin\n"),
+        CommandResult(returncode=0, stdout="PATH=/opt/admt:/usr/bin\n"),
+        _ok(),
+    ]
+    result = svc.exec_captured("redo what")
+    assert result.returncode == 0
+    assert result.stdout == "payload\n"
+
+
 def test_exec_verbose_failure_does_not_double_echo(docker, capsys):
     """Verbose already echoed pre-exec; don't duplicate on failure."""
     svc = ContainerService(

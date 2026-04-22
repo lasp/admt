@@ -18,3 +18,4 @@ class TestCommand(ContainerPassthroughCommand):
     help: ClassVar[str] = "Run tests (redo test; --all for test_all)."
     redo_target: ClassVar[str] = "test"
     supports_all: ClassVar[bool] = True
+    status_verb: ClassVar[str | None] = "testing"

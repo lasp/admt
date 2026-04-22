@@ -14,3 +14,4 @@ class StyleCommand(ContainerPassthroughCommand):
     help: ClassVar[str] = "Check code style (redo style; --all for style_all)."
     redo_target: ClassVar[str] = "style"
     supports_all: ClassVar[bool] = True
+    status_verb: ClassVar[str | None] = "checking style"

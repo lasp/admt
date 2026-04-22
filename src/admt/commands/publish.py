@@ -14,3 +14,4 @@ class PublishCommand(ContainerPassthroughCommand):
     help: ClassVar[str] = "Publish build artifacts (redo publish; --all for publish_all)."
     redo_target: ClassVar[str] = "publish"
     supports_all: ClassVar[bool] = True
+    status_verb: ClassVar[str | None] = "publishing"

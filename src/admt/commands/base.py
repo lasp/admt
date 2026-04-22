@@ -63,6 +63,11 @@ class ContainerPassthroughCommand(Command):
     requires_container: ClassVar[bool] = True
     redo_target: ClassVar[str] = ""
     supports_all: ClassVar[bool] = False
+    # Gerund for a static "admt <status_verb>..." line printed before
+    # long-running commands so the user sees admt has started. ``None``
+    # (the default) skips the line -- used for ``what`` (fast, output
+    # speaks for itself) and ``templates`` (has its own output flow).
+    status_verb: ClassVar[str | None] = None
 
     def resolve_target(self, context: Context) -> str:
         """Return the redo target for this command.
@@ -83,6 +88,8 @@ class ContainerPassthroughCommand(Command):
             raise ContainerError(msg)
         container_path = context.resolve_container_path()
         target = self.resolve_target(context)
+        if self.status_verb:
+            context.output.info(f"admt {self.status_verb}...")
         redo_cmd = RedoAdapter.build_command(target, cwd=container_path, debug=context.debug)
         exit_code = context.container_service.exec(
             redo_cmd,

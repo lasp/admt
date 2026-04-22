@@ -14,6 +14,7 @@ from unittest.mock import MagicMock
 import pytest
 from click.testing import CliRunner
 
+from admt.adapters.docker import CommandResult
 from admt.cli import cli
 from admt.exceptions import ConfigError
 from admt.services.container import ContainerService
@@ -92,7 +93,6 @@ def mock_container(monkeypatch):
     ("cmd_args", "expected_target"),
     [
         (["build"], "all"),
-        (["what"], "what"),
         (["prove"], "prove"),
     ],
 )
@@ -107,6 +107,27 @@ def test_single_target_commands_from_project_root(
     redo_cmd = mock_container.exec.call_args.args[0]
     assert redo_cmd == f"cd /home/user/myproj && redo {expected_target}"
     assert mock_container.exec.call_args.kwargs["merge_stderr"] is True
+
+
+def test_what_uses_exec_captured_and_transforms(registered, mock_container, tmp_path, monkeypatch):
+    """``admt what`` captures redo output and rewrites it to admt commands."""
+    root, runner = registered
+    monkeypatch.chdir(root)
+    mock_container.exec_captured.return_value = CommandResult(
+        returncode=0,
+        stdout="redo  what\nredo all\nredo test_all\nredo build/dot/foo.dot\n",
+    )
+    result = runner.invoke(cli, ["what"], env=_env_vars(tmp_path))
+    assert result.exit_code == 0, result.output
+    # Transformation happened:
+    assert "admt build" in result.output
+    assert "admt test --all" in result.output
+    assert "admt build build/dot/foo.dot" in result.output
+    # "redo  what" header was dropped.
+    assert "redo  what" not in result.output
+    # exec_captured was used, not exec.
+    mock_container.exec_captured.assert_called_once()
+    mock_container.exec.assert_not_called()
 
 
 # ----- --all variants -----
@@ -169,11 +190,14 @@ def test_positional_non_directory_is_target(registered, mock_container, tmp_path
 def test_positional_unknown_name_becomes_target(registered, mock_container, tmp_path, monkeypatch):
     root, runner = registered
     monkeypatch.chdir(root)
+    # WhatCommand captures via exec_captured; seed a benign empty output.
+    mock_container.exec_captured.return_value = CommandResult(returncode=0, stdout="")
     result = runner.invoke(cli, ["what", "some_name"], env=_env_vars(tmp_path))
     assert result.exit_code == 0
-    # Even though WhatCommand usually ignores target, the CLI wrapper still
-    # populates context.target when the arg doesn't resolve to a directory.
-    redo_cmd = mock_container.exec.call_args.args[0]
+    # WhatCommand always invokes ``redo what`` regardless of any positional
+    # target string (it doesn't honor context.target); the positional still
+    # parses cleanly without crashing the CLI.
+    redo_cmd = mock_container.exec_captured.call_args.args[0]
     assert redo_cmd.endswith("&& redo what")
 
 
@@ -198,9 +222,13 @@ def test_passthrough_aliases(alias, full_name, registered, mock_container, tmp_p
     del full_name  # unused in the runtime assertion; covered by format-commands test
     root, runner = registered
     monkeypatch.chdir(root)
+    # Seed exec_captured for the ``w`` (what) alias which captures instead of streams.
+    mock_container.exec_captured.return_value = CommandResult(returncode=0, stdout="")
     result = runner.invoke(cli, [alias], env=_env_vars(tmp_path))
     assert result.exit_code == 0, result.output
-    assert mock_container.exec.called
+    # Either the streaming ``exec`` (most commands) or ``exec_captured`` (what)
+    # was invoked -- confirm the alias actually dispatched to the container.
+    assert mock_container.exec.called or mock_container.exec_captured.called
 
 
 # ----- exit-code propagation -----

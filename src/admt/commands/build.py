@@ -16,6 +16,7 @@ class BuildCommand(ContainerPassthroughCommand):
     name: ClassVar[str] = "build"
     help: ClassVar[str] = "Build via redo (default target: all)."
     redo_target: ClassVar[str] = "all"
+    status_verb: ClassVar[str | None] = "building"
 
     def resolve_target(self, context: Context) -> str:
         """Use ``context.target`` when the user supplied one, otherwise ``all``."""

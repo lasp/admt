@@ -194,7 +194,35 @@ def test_docker_exec_capture_output_uses_subprocess_run(adapter):
     assert result.stderr == "warn"
     # capture_output has no timeout (user-bounded build).
     assert "timeout" not in run.call_args.kwargs or run.call_args.kwargs["timeout"] is None
-    assert run.call_args.kwargs["capture_output"] is True
+    # When ``merge_stderr`` is False (default), stdout and stderr are piped
+    # separately via explicit PIPE args (not ``capture_output=True`` shorthand,
+    # which would prevent honoring ``merge_stderr=True`` on another call).
+    assert run.call_args.kwargs["stdout"] is subprocess.PIPE
+    assert run.call_args.kwargs["stderr"] is subprocess.PIPE
+
+
+def test_docker_exec_capture_with_merge_stderr_redirects_to_stdout(adapter):
+    """Regression: ``capture_output=True`` + ``merge_stderr=True`` must plumb
+    stderr to STDOUT at the subprocess level.
+
+    Without this, redo's output (which redo writes to stderr) ends up in
+    ``result.stderr`` and a caller that inspects only ``result.stdout`` --
+    like ``WhatCommand._transform`` -- sees nothing and emits nothing.
+    """
+    with patch(
+        "subprocess.run",
+        return_value=_make_completed(stdout="merged output", stderr=""),
+    ) as run:
+        result = adapter.docker_exec(["redo", "what"], capture_output=True, merge_stderr=True)
+    # subprocess.run was invoked with stderr=STDOUT so the child's stderr
+    # stream folded into stdout before capture.
+    assert run.call_args.kwargs["stderr"] is subprocess.STDOUT
+    assert run.call_args.kwargs["stdout"] is subprocess.PIPE
+    # ``capture_output=True`` shorthand is NOT used (it would force
+    # stderr=PIPE and drop the redirect).
+    assert run.call_args.kwargs.get("capture_output") is not True
+    # The merged content lands on result.stdout.
+    assert result.stdout == "merged output"
 
 
 # ----- captured and stdin docker_exec variants -----

@@ -155,9 +155,17 @@ class DockerAdapter:
         args.extend(command)
         cmd = ["docker", *args]
         if capture_output:
+            # ``capture_output=True`` on subprocess.run is shorthand for
+            # stdout=PIPE + stderr=PIPE (separate streams). To honor
+            # ``merge_stderr`` in capture mode we have to plumb stderr to
+            # STDOUT ourselves -- otherwise redo (which writes to stderr)
+            # lands in ``result.stderr`` and a caller inspecting stdout
+            # (like WhatCommand) sees nothing.
+            stderr_target = subprocess.STDOUT if merge_stderr else subprocess.PIPE
             completed = subprocess.run(
                 cmd,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=stderr_target,
                 text=True,
                 check=False,
             )

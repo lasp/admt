@@ -167,3 +167,33 @@ def test_passthrough_uses_resolve_target_output(make_context):
     ctx, container = _passthrough_ctx(make_context, path=Path("/sim/proj"), run_all=True)
     Fake().execute(ctx)
     assert "redo test_all" in container.exec.call_args.args[0]
+
+
+def test_passthrough_status_verb_emits_static_line(make_context):
+    """Commands with ``status_verb`` print ``admt <verb>...`` before exec."""
+
+    class Fake(ContainerPassthroughCommand):
+        name = "fake"
+        help = "fake"
+        redo_target = "all"
+        status_verb = "building"
+
+    ctx, _container = _passthrough_ctx(make_context, path=Path("/sim/proj"))
+    Fake().execute(ctx)
+    info_lines = [call.args[0] for call in ctx.output.info.call_args_list]
+    assert "admt building..." in info_lines
+
+
+def test_passthrough_without_status_verb_emits_no_status_line(make_context):
+    """Default ``status_verb = None`` means no status line."""
+
+    class Fake(ContainerPassthroughCommand):
+        name = "fake"
+        help = "fake"
+        redo_target = "all"
+        # status_verb not set -> inherits None
+
+    ctx, _container = _passthrough_ctx(make_context, path=Path("/sim/proj"))
+    Fake().execute(ctx)
+    info_lines = [call.args[0] for call in ctx.output.info.call_args_list]
+    assert not any(line.startswith("admt ") and "..." in line for line in info_lines)
