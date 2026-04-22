@@ -29,6 +29,7 @@ def adapter(compose_path):
     return DockerAdapter(
         compose_file=compose_path,
         service_name="svc",
+        container_name="svc_container",
         compose_cmd=["docker", "compose"],
     )
 
@@ -121,40 +122,73 @@ def test_compose_build_push_pull(adapter):
         _assert_streamed(adapter, expected, popen)
 
 
-def test_compose_exec_non_interactive_uses_t_flag(adapter):
+def test_streaming_forwards_return_code(adapter):
+    with patch("subprocess.Popen", return_value=_make_popen_mock(returncode=SENTINEL_EXIT)):
+        result = adapter.compose_up()
+    assert result.returncode == SENTINEL_EXIT
+
+
+# ----- docker_exec family (bypasses compose, targets container by name) -----
+
+
+def test_docker_exec_non_interactive_uses_i_flag(adapter):
     with patch("subprocess.Popen", return_value=_make_popen_mock()) as popen:
-        adapter.compose_exec(["echo", "hi"])
-    _assert_streamed(adapter, ["exec", "-u", "user", "-T", "svc", "echo", "hi"], popen)
+        adapter.docker_exec(["echo", "hi"])
+    assert popen.call_args.args[0] == [
+        "docker",
+        "exec",
+        "-u",
+        "user",
+        "-i",
+        "svc_container",
+        "echo",
+        "hi",
+    ]
 
 
-def test_compose_exec_interactive_uses_it(adapter):
+def test_docker_exec_interactive_uses_it(adapter):
     with patch("subprocess.Popen", return_value=_make_popen_mock()) as popen:
-        adapter.compose_exec(["bash"], interactive=True)
-    _assert_streamed(adapter, ["exec", "-u", "user", "-it", "svc", "bash"], popen)
+        adapter.docker_exec(["bash"], interactive=True)
+    assert popen.call_args.args[0] == [
+        "docker",
+        "exec",
+        "-u",
+        "user",
+        "-it",
+        "svc_container",
+        "bash",
+    ]
 
 
-def test_compose_exec_custom_user(adapter):
+def test_docker_exec_custom_user(adapter):
     with patch("subprocess.Popen", return_value=_make_popen_mock()) as popen:
-        adapter.compose_exec(["whoami"], user="root")
-    _assert_streamed(adapter, ["exec", "-u", "root", "-T", "svc", "whoami"], popen)
+        adapter.docker_exec(["whoami"], user="root")
+    # User flag changes; "-i" for non-interactive stays.
+    assert popen.call_args.args[0][:6] == [
+        "docker",
+        "exec",
+        "-u",
+        "root",
+        "-i",
+        "svc_container",
+    ]
 
 
-def test_compose_exec_merge_stderr_passes_stdout_redirect(adapter):
+def test_docker_exec_merge_stderr_passes_stdout_redirect(adapter):
     with patch("subprocess.Popen", return_value=_make_popen_mock()) as popen:
-        adapter.compose_exec(["redo", "all"], merge_stderr=True)
+        adapter.docker_exec(["redo", "all"], merge_stderr=True)
     assert popen.call_args.kwargs["stderr"] is subprocess.STDOUT
 
 
-def test_compose_exec_without_merge_inherits_stderr(adapter):
+def test_docker_exec_without_merge_inherits_stderr(adapter):
     with patch("subprocess.Popen", return_value=_make_popen_mock()) as popen:
-        adapter.compose_exec(["bash", "-c", "true"])
-    # Default stderr is None (inherit parent).
+        adapter.docker_exec(["bash", "-c", "true"])
     assert popen.call_args.kwargs.get("stderr") is None
 
 
-def test_compose_exec_capture_output_uses_subprocess_run(adapter):
+def test_docker_exec_capture_output_uses_subprocess_run(adapter):
     with patch("subprocess.run", return_value=_make_completed(stdout="ok", stderr="warn")) as run:
-        result = adapter.compose_exec(["redo", "all"], capture_output=True)
+        result = adapter.docker_exec(["redo", "all"], capture_output=True)
     assert result.returncode == 0
     assert result.stdout == "ok"
     assert result.stderr == "warn"
@@ -163,60 +197,89 @@ def test_compose_exec_capture_output_uses_subprocess_run(adapter):
     assert run.call_args.kwargs["capture_output"] is True
 
 
-def test_streaming_forwards_return_code(adapter):
-    with patch("subprocess.Popen", return_value=_make_popen_mock(returncode=SENTINEL_EXIT)):
-        result = adapter.compose_up()
-    assert result.returncode == SENTINEL_EXIT
+# ----- captured and stdin docker_exec variants -----
 
 
-# ----- captured methods -----
-
-
-def test_compose_exec_captured_uses_subprocess_run(adapter):
+def test_docker_exec_captured_builds_argv_and_captures(adapter):
     with patch("subprocess.run", return_value=_make_completed(stdout="hi\n")) as run:
-        result = adapter.compose_exec_captured(["echo", "hi"])
+        result = adapter.docker_exec_captured(["echo", "hi"])
     assert result.stdout == "hi\n"
-    run_args = run.call_args.args[0]
-    assert run_args[:2] == ["docker", "compose"]
-    assert run_args[-7:] == ["exec", "-T", "-u", "user", "svc", "echo", "hi"]
-
-
-def test_compose_exec_captured_includes_timeout(adapter):
-    with patch("subprocess.run", return_value=_make_completed()) as run:
-        adapter.compose_exec_captured(["true"])
+    assert run.call_args.args[0] == [
+        "docker",
+        "exec",
+        "-i",
+        "-u",
+        "user",
+        "svc_container",
+        "echo",
+        "hi",
+    ]
     assert run.call_args.kwargs["timeout"] > 0
     assert run.call_args.kwargs["capture_output"] is True
 
 
-def test_compose_exec_captured_timeout_raises(adapter):
+def test_docker_exec_captured_timeout_raises(adapter):
     with (
         patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="x", timeout=30)),
         pytest.raises(ContainerError, match="timed out"),
     ):
-        adapter.compose_exec_captured(["hung"])
+        adapter.docker_exec_captured(["hung"])
 
 
-def test_compose_exec_with_stdin_pipes_input(adapter):
+def test_docker_exec_with_stdin_pipes_input(adapter):
     with patch("subprocess.run", return_value=_make_completed()) as run:
-        adapter.compose_exec_with_stdin(["cat"], "payload\n")
+        adapter.docker_exec_with_stdin(["cat"], "payload\n")
     assert run.call_args.kwargs["input"] == "payload\n"
+    assert run.call_args.args[0][:6] == [
+        "docker",
+        "exec",
+        "-i",
+        "-u",
+        "user",
+        "svc_container",
+    ]
 
 
-def test_compose_exec_with_stdin_timeout_raises(adapter):
+def test_docker_exec_with_stdin_timeout_raises(adapter):
     with (
         patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="x", timeout=30)),
         pytest.raises(ContainerError, match="timed out"),
     ):
-        adapter.compose_exec_with_stdin(["cat"], "payload")
+        adapter.docker_exec_with_stdin(["cat"], "payload")
 
 
-def test_compose_ps_uses_json_format(adapter):
-    with patch("subprocess.run", return_value=_make_completed(stdout="[]")) as run:
-        result = adapter.compose_ps()
-    assert result.stdout == "[]"
-    run_args = run.call_args.args[0]
-    assert "ps" in run_args
-    assert run_args[-2:] == ["--format", "json"]
+# ----- docker_inspect_state -----
+
+
+def test_docker_inspect_state_builds_argv(adapter):
+    with patch("subprocess.run", return_value=_make_completed(stdout="running\n")) as run:
+        result = adapter.docker_inspect_state()
+    assert result.stdout == "running\n"
+    assert run.call_args.args[0] == [
+        "docker",
+        "inspect",
+        "-f",
+        "{{.State.Status}}",
+        "svc_container",
+    ]
+
+
+def test_docker_inspect_state_timeout_raises(adapter):
+    with (
+        patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="x", timeout=30)),
+        pytest.raises(ContainerError, match="timed out"),
+    ):
+        adapter.docker_inspect_state()
+
+
+def test_docker_inspect_state_surfaces_non_zero_exit(adapter):
+    with patch(
+        "subprocess.run",
+        return_value=_make_completed(returncode=1, stderr="Error: No such object: svc_container\n"),
+    ):
+        result = adapter.docker_inspect_state()
+    assert result.returncode == 1
+    assert "no such object" in result.stderr.lower()
 
 
 # ----- image helpers -----
@@ -235,6 +298,15 @@ def test_image_name_returns_none_on_non_zero_exit(adapter):
 def test_image_name_returns_none_when_empty(adapter):
     with patch("subprocess.run", return_value=_make_completed(stdout="\n")):
         assert adapter.image_name() is None
+
+
+def test_image_name_timeout_raises(adapter):
+    """image_name goes through _run_captured; the bounded timeout must surface."""
+    with (
+        patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="x", timeout=30)),
+        pytest.raises(ContainerError, match="timed out"),
+    ):
+        adapter.image_name()
 
 
 def test_remove_image_no_op_when_no_image(adapter):

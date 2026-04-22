@@ -71,10 +71,26 @@ def _detect_compose_command() -> list[str]:
 
 @dataclass
 class DockerAdapter:
-    """Thin wrapper over ``docker compose`` for a single project's compose file."""
+    """Thin wrapper over ``docker`` and ``docker compose``.
+
+    Two families live here for a reason:
+
+    - ``compose_*`` methods drive lifecycle operations (``up``, ``stop``,
+      ``down``, ``build``, ``push``, ``pull``) that need the compose file --
+      volumes, env, service definitions. These are one-shot, user-initiated
+      calls where the compose-plugin overhead doesn't matter.
+
+    - ``docker_*`` methods target the already-running container directly by
+      name, bypassing compose entirely. Every ``docker compose`` invocation
+      on Docker Desktop for Mac eats ~3s parsing the compose file before it
+      even reaches the daemon, so the hot path (status probes, exec) uses
+      plain ``docker exec`` / ``docker inspect`` against ``container_name``
+      for roughly 20x lower overhead.
+    """
 
     compose_file: Path
     service_name: str
+    container_name: str
     compose_cmd: list[str] = field(default_factory=_detect_compose_command)
 
     # ------------------------------------------------------------------
@@ -109,10 +125,10 @@ class DockerAdapter:
         return self._run_streaming(["pull"])
 
     # ------------------------------------------------------------------
-    # Exec variants.
+    # Exec and inspect: target the container directly, bypass compose.
     # ------------------------------------------------------------------
 
-    def compose_exec(
+    def docker_exec(
         self,
         command: list[str],
         *,
@@ -121,27 +137,23 @@ class DockerAdapter:
         merge_stderr: bool = False,
         capture_output: bool = False,
     ) -> CommandResult:
-        """Run ``command`` inside the container.
+        """Run ``command`` inside the container via ``docker exec``.
 
-        ``interactive=True`` allocates a TTY and forwards stdin (``admt env
-        login`` / ``admt env exec`` when stdin is a terminal).
+        Bypasses ``docker compose`` -- target the container by name
+        directly. ~20x lower overhead than ``compose_exec`` on Docker
+        Desktop for Mac where the compose-plugin startup dominates.
 
-        ``merge_stderr=True`` routes the child's stderr into stdout at the
-        subprocess boundary -- used by the redo passthrough so redo's
-        human-readable output (which redo writes to stderr) follows admt's
-        stdout convention. Preserves ANSI colors because the merged stream
-        still traverses the user's TTY.
-
-        ``capture_output=True`` swaps streaming for buffered capture -- used
-        by ``--quiet`` so admt can discard output on success and emit it
-        verbatim on failure. No timeout: user-bounded build, can run
-        indefinitely.
+        Semantics otherwise mirror ``compose_exec``: ``interactive`` for
+        ``-it``, ``merge_stderr`` routes child stderr to stdout at the
+        subprocess boundary, ``capture_output`` swaps streaming for
+        buffered capture (used by ``--quiet``). No timeout on streaming
+        or capture variants -- user-bounded builds can run for minutes.
         """
         args = ["exec", "-u", user]
-        args.append("-it" if interactive else "-T")
-        args.append(self.service_name)
+        args.append("-it" if interactive else "-i")
+        args.append(self.container_name)
         args.extend(command)
-        cmd = [*self.compose_cmd, "-f", str(self.compose_file), *args]
+        cmd = ["docker", *args]
         if capture_output:
             completed = subprocess.run(
                 cmd,
@@ -157,29 +169,88 @@ class DockerAdapter:
         stderr = subprocess.STDOUT if merge_stderr else None
         return CommandResult(returncode=self._spawn_tracked(cmd, stderr=stderr))
 
-    def compose_exec_captured(self, command: list[str], *, user: str = "user") -> CommandResult:
-        """Run ``command`` with captured stdout/stderr; bounded timeout.
+    def docker_exec_captured(self, command: list[str], *, user: str = "user") -> CommandResult:
+        """Run ``command`` via ``docker exec`` with captured output and bounded timeout.
 
-        Use for status probes and env-snapshot generation, not for long-running
-        user-facing commands.
+        Use for status probes and env-snapshot generation, not for
+        long-running user-facing commands.
         """
-        args = ["exec", "-T", "-u", user, self.service_name, *command]
-        return self._run_captured(args)
+        cmd = ["docker", "exec", "-i", "-u", user, self.container_name, *command]
+        try:
+            completed = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=_BOUNDED_TIMEOUT_SECS,
+            )
+        except subprocess.TimeoutExpired as exc:
+            msg = f"docker exec timed out after {_BOUNDED_TIMEOUT_SECS}s."
+            raise ContainerError(msg) from exc
+        return CommandResult(
+            returncode=completed.returncode,
+            stdout=completed.stdout or "",
+            stderr=completed.stderr or "",
+        )
 
-    def compose_exec_with_stdin(
+    def docker_exec_with_stdin(
         self, command: list[str], stdin_data: str, *, user: str = "user"
     ) -> CommandResult:
-        """Run ``command`` with ``stdin_data`` piped in; captured output."""
-        args = ["exec", "-T", "-u", user, self.service_name, *command]
-        return self._run_with_stdin(args, stdin_data)
+        """Pipe ``stdin_data`` into ``docker exec``; captured output."""
+        cmd = ["docker", "exec", "-i", "-u", user, self.container_name, *command]
+        try:
+            completed = subprocess.run(
+                cmd,
+                input=stdin_data,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=_BOUNDED_TIMEOUT_SECS,
+            )
+        except subprocess.TimeoutExpired as exc:
+            msg = f"docker exec timed out after {_BOUNDED_TIMEOUT_SECS}s."
+            raise ContainerError(msg) from exc
+        return CommandResult(
+            returncode=completed.returncode,
+            stdout=completed.stdout or "",
+            stderr=completed.stderr or "",
+        )
+
+    def docker_inspect_state(self) -> CommandResult:
+        """Fetch the container's runtime state via ``docker inspect``.
+
+        Stdout is the status string (``running``, ``exited``, ``paused``,
+        ``restarting``, ``dead``, ``created``) plus a trailing newline.
+        Non-zero exit with ``No such object`` in stderr means the container
+        does not exist.
+        """
+        cmd = [
+            "docker",
+            "inspect",
+            "-f",
+            "{{.State.Status}}",
+            self.container_name,
+        ]
+        try:
+            completed = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=_BOUNDED_TIMEOUT_SECS,
+            )
+        except subprocess.TimeoutExpired as exc:
+            msg = f"docker inspect timed out after {_BOUNDED_TIMEOUT_SECS}s."
+            raise ContainerError(msg) from exc
+        return CommandResult(
+            returncode=completed.returncode,
+            stdout=completed.stdout or "",
+            stderr=completed.stderr or "",
+        )
 
     # ------------------------------------------------------------------
-    # Status and image management.
+    # Image management.
     # ------------------------------------------------------------------
-
-    def compose_ps(self) -> CommandResult:
-        """``docker compose ps --format json`` (captured)."""
-        return self._run_captured(["ps", "--format", "json"])
 
     def image_name(self) -> str | None:
         """Return the image tag for ``service_name`` via ``docker compose config``.
@@ -247,27 +318,6 @@ class DockerAdapter:
         try:
             completed = subprocess.run(
                 cmd,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=_BOUNDED_TIMEOUT_SECS,
-            )
-        except subprocess.TimeoutExpired as exc:
-            msg = f"docker compose {compose_args[0]!r} timed out after {_BOUNDED_TIMEOUT_SECS}s."
-            raise ContainerError(msg) from exc
-        return CommandResult(
-            returncode=completed.returncode,
-            stdout=completed.stdout or "",
-            stderr=completed.stderr or "",
-        )
-
-    def _run_with_stdin(self, compose_args: list[str], stdin_data: str) -> CommandResult:
-        """Pipe ``stdin_data`` into ``docker compose ...`` with captured output."""
-        cmd = [*self.compose_cmd, "-f", str(self.compose_file), *compose_args]
-        try:
-            completed = subprocess.run(
-                cmd,
-                input=stdin_data,
                 capture_output=True,
                 text=True,
                 check=False,
