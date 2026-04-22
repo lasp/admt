@@ -13,6 +13,7 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, ClassVar
 
 from admt.adapters.redo import RedoAdapter
+from admt.adapters.redo_output import rewrite_line_terse
 from admt.context import Result
 from admt.exceptions import ContainerError
 
@@ -82,19 +83,35 @@ class ContainerPassthroughCommand(Command):
         return target
 
     def execute(self, context: Context) -> Result:
-        """Map path, assemble redo command, forward through the container."""
+        """Map path, assemble redo command, forward through the container.
+
+        Streaming mode threads ``rewrite_line_terse`` as the per-line
+        transform so redo's progress output (``redo    build/src/foo.adb``)
+        is rewritten to ``build build/src/foo.adb`` as it arrives -- the
+        ``admt `` prefix is dropped because the user already typed the verb.
+        In quiet mode the transform is omitted; captured output stays raw
+        and is only shown on failure via ``emit_captured``.
+
+        ``status_verb`` frames the streaming output on success: ``<verb>...``
+        goes out before exec starts, then ``done.`` after exec returns 0.
+        On failure the closing line is suppressed -- the adapter's
+        ``Failed (exit N): <cmd>`` diagnostic is the signal there.
+        """
         if context.container_service is None:
             msg = "ContainerService was not wired for this command (CLI bug)."
             raise ContainerError(msg)
         container_path = context.resolve_container_path()
         target = self.resolve_target(context)
         if self.status_verb:
-            context.output.info(f"admt {self.status_verb}...")
+            context.output.info(f"{self.status_verb}...")
         redo_cmd = RedoAdapter.build_command(target, cwd=container_path, debug=context.debug)
         exit_code = context.container_service.exec(
             redo_cmd,
             interactive=False,
             merge_stderr=True,
             capture_output=context.quiet,
+            line_transform=None if context.quiet else rewrite_line_terse,
         )
+        if exit_code == 0 and self.status_verb:
+            context.output.info("done.")
         return Result(exit_code=exit_code)

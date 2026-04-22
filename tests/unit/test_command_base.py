@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from admt.adapters.redo_output import rewrite_line_terse
 from admt.commands.base import Command, ContainerPassthroughCommand
 from admt.context import Result
 from admt.exceptions import ContainerError
@@ -142,6 +143,33 @@ def test_passthrough_threads_quiet_as_capture_output(make_context):
     assert container.exec.call_args.kwargs["capture_output"] is True
 
 
+def test_passthrough_streams_with_rewrite_line_terse(make_context):
+    """Streaming mode threads ``rewrite_line_terse`` so each progress line
+    is rewritten without the ``admt `` prefix (user already typed it)."""
+
+    class Fake(ContainerPassthroughCommand):
+        name = "fake"
+        help = "fake"
+        redo_target = "all"
+
+    ctx, container = _passthrough_ctx(make_context, path=Path("/sim/proj"))
+    Fake().execute(ctx)
+    assert container.exec.call_args.kwargs["line_transform"] is rewrite_line_terse
+
+
+def test_passthrough_skips_line_transform_in_quiet_mode(make_context):
+    """Quiet mode captures; the transform would never see those lines."""
+
+    class Fake(ContainerPassthroughCommand):
+        name = "fake"
+        help = "fake"
+        redo_target = "all"
+
+    ctx, container = _passthrough_ctx(make_context, path=Path("/sim/proj"), quiet=True)
+    Fake().execute(ctx)
+    assert container.exec.call_args.kwargs["line_transform"] is None
+
+
 def test_passthrough_forwards_exec_exit_code(make_context):
     class Fake(ContainerPassthroughCommand):
         name = "fake"
@@ -170,7 +198,7 @@ def test_passthrough_uses_resolve_target_output(make_context):
 
 
 def test_passthrough_status_verb_emits_static_line(make_context):
-    """Commands with ``status_verb`` print ``admt <verb>...`` before exec."""
+    """Commands with ``status_verb`` print ``<verb>...`` before exec."""
 
     class Fake(ContainerPassthroughCommand):
         name = "fake"
@@ -181,11 +209,43 @@ def test_passthrough_status_verb_emits_static_line(make_context):
     ctx, _container = _passthrough_ctx(make_context, path=Path("/sim/proj"))
     Fake().execute(ctx)
     info_lines = [call.args[0] for call in ctx.output.info.call_args_list]
-    assert "admt building..." in info_lines
+    assert "building..." in info_lines
+
+
+def test_passthrough_emits_done_after_successful_exec(make_context):
+    """Status-verb commands print ``done.`` once the container exec returns 0."""
+
+    class Fake(ContainerPassthroughCommand):
+        name = "fake"
+        help = "fake"
+        redo_target = "all"
+        status_verb = "building"
+
+    ctx, _container = _passthrough_ctx(make_context, path=Path("/sim/proj"))
+    Fake().execute(ctx)
+    info_lines = [call.args[0] for call in ctx.output.info.call_args_list]
+    # Opening status, then done. -- done. lands last.
+    assert info_lines[-1] == "done."
+
+
+def test_passthrough_suppresses_done_on_non_zero_exit(make_context):
+    """Failure path: ``Failed (exit N)`` is the signal; no ``done.`` on stdout."""
+
+    class Fake(ContainerPassthroughCommand):
+        name = "fake"
+        help = "fake"
+        redo_target = "all"
+        status_verb = "building"
+
+    ctx, container = _passthrough_ctx(make_context, path=Path("/sim/proj"))
+    container.exec.return_value = 2
+    Fake().execute(ctx)
+    info_lines = [call.args[0] for call in ctx.output.info.call_args_list]
+    assert "done." not in info_lines
 
 
 def test_passthrough_without_status_verb_emits_no_status_line(make_context):
-    """Default ``status_verb = None`` means no status line."""
+    """Default ``status_verb = None`` means neither opening nor closing line fires."""
 
     class Fake(ContainerPassthroughCommand):
         name = "fake"
@@ -196,4 +256,5 @@ def test_passthrough_without_status_verb_emits_no_status_line(make_context):
     ctx, _container = _passthrough_ctx(make_context, path=Path("/sim/proj"))
     Fake().execute(ctx)
     info_lines = [call.args[0] for call in ctx.output.info.call_args_list]
-    assert not any(line.startswith("admt ") and "..." in line for line in info_lines)
+    assert not any(line.endswith("...") for line in info_lines)
+    assert "done." not in info_lines

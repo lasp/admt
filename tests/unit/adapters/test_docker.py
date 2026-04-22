@@ -225,6 +225,80 @@ def test_docker_exec_capture_with_merge_stderr_redirects_to_stdout(adapter):
     assert result.stdout == "merged output"
 
 
+# ----- docker_exec streaming with line_transform -----
+
+
+def _popen_stub_with_stdout(lines, returncode=0):
+    """Popen stand-in whose ``stdout`` iterates the given lines."""
+    stub = _make_popen_mock(returncode=returncode)
+    stub.stdout = iter(lines)
+    return stub
+
+
+def test_docker_exec_line_transform_rewrites_each_stdout_line(adapter, capsys):
+    """Each stdout line is fed through the transform before reaching the user."""
+    captured = _popen_stub_with_stdout(["redo  all\n", "redo    build/x.adb\n"])
+
+    def transform(line):
+        return f"TX:{line.rstrip()}"
+
+    with patch("subprocess.Popen", return_value=captured) as popen:
+        result = adapter.docker_exec(["redo", "all"], line_transform=transform, merge_stderr=True)
+
+    out = capsys.readouterr().out
+    assert out == "TX:redo  all\nTX:redo    build/x.adb\n"
+    assert result.returncode == 0
+    # stdout is piped so we can intercept; stderr merges so redo's human
+    # output reaches the transform.
+    assert popen.call_args.kwargs["stdout"] is subprocess.PIPE
+    assert popen.call_args.kwargs["stderr"] is subprocess.STDOUT
+
+
+def test_docker_exec_line_transform_drops_none_returns(adapter, capsys):
+    """When the transform returns None, the line is skipped."""
+    captured = _popen_stub_with_stdout(["keep\n", "skip\n", "keep\n"])
+
+    def transform(line):
+        return None if line.startswith("skip") else line
+
+    with patch("subprocess.Popen", return_value=captured):
+        adapter.docker_exec(["echo"], line_transform=transform)
+
+    # Only the "keep" lines reach stdout.
+    assert capsys.readouterr().out == "keep\nkeep\n"
+
+
+def test_docker_exec_line_transform_appends_missing_newline(adapter, capsys):
+    """Transformed output without a trailing newline gets one appended."""
+    captured = _popen_stub_with_stdout(["in\n"])
+
+    def transform(line):
+        return line.rstrip("\n")  # strip the newline
+
+    with patch("subprocess.Popen", return_value=captured):
+        adapter.docker_exec(["echo"], line_transform=transform)
+
+    assert capsys.readouterr().out == "in\n"
+
+
+def test_docker_exec_line_transform_without_merge_stderr_leaves_stderr_inherited(adapter):
+    """``merge_stderr=False`` with a transform uses default stderr (parent's)."""
+    captured = _popen_stub_with_stdout([])
+
+    with patch("subprocess.Popen", return_value=captured) as popen:
+        adapter.docker_exec(["echo"], line_transform=lambda line: line, merge_stderr=False)
+
+    assert popen.call_args.kwargs.get("stderr") is None
+
+
+def test_docker_exec_line_transform_ignored_in_interactive_mode(adapter):
+    """Interactive shells can't route through a line transform; fall back to streaming."""
+    with patch("subprocess.Popen", return_value=_make_popen_mock()) as popen:
+        adapter.docker_exec(["bash"], interactive=True, line_transform=lambda line: line)
+    # ``stdout`` was NOT piped -- streaming-transform path was bypassed.
+    assert popen.call_args.kwargs.get("stdout") is None
+
+
 # ----- captured and stdin docker_exec variants -----
 
 

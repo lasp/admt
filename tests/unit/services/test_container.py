@@ -273,6 +273,7 @@ def test_exec_ensures_snapshot_then_runs_via_proxy(svc, docker):
         "interactive": False,
         "merge_stderr": False,
         "capture_output": False,
+        "line_transform": None,
     }
 
 
@@ -290,6 +291,19 @@ def test_exec_threads_merge_stderr(svc, docker):
     docker.docker_exec.return_value = CommandResult(returncode=0)
     svc.exec("redo all", merge_stderr=True)
     assert docker.docker_exec.call_args.kwargs["merge_stderr"] is True
+
+
+def test_exec_forwards_line_transform_to_adapter(svc, docker):
+    """ContainerPassthroughCommand can thread a line_transform through."""
+    _prime_running(docker)
+    docker.docker_exec_captured.return_value = _ok()
+    docker.docker_exec.return_value = CommandResult(returncode=0)
+
+    def transform(line):
+        return line
+
+    svc.exec("redo all", line_transform=transform)
+    assert docker.docker_exec.call_args.kwargs["line_transform"] is transform
 
 
 def test_exec_captures_output_and_emits_on_failure(docker, capsys):

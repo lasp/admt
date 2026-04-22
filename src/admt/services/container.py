@@ -31,7 +31,7 @@ from admt.exceptions import ContainerError
 _VALID_SHELL_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 if TYPE_CHECKING:
-    from admt.adapters.docker import CommandResult, DockerAdapter
+    from admt.adapters.docker import CommandResult, DockerAdapter, LineTransform
     from admt.services.config import ProjectConfig
     from admt.services.output import OutputService
 
@@ -193,6 +193,7 @@ class ContainerService:
         interactive: bool = False,
         merge_stderr: bool = False,
         capture_output: bool = False,
+        line_transform: LineTransform | None = None,
     ) -> int:
         """Run ``command`` inside the container via the admt env proxy.
 
@@ -210,11 +211,13 @@ class ContainerService:
         If neither applies, the failure is the user's command -- propagate
         as-is without a spurious retry.
 
-        ``merge_stderr`` / ``capture_output`` are forwarded to the
-        DockerAdapter -- see its docstring for semantics. In quiet mode
-        (``capture_output=True``), the buffered output is emitted verbatim
-        on failure via ``OutputService.emit_captured`` so the user still
-        sees what went wrong.
+        ``merge_stderr`` / ``capture_output`` / ``line_transform`` are
+        forwarded to the DockerAdapter -- see its docstring for semantics.
+        In quiet mode (``capture_output=True``), the buffered output is
+        emitted verbatim on failure via ``OutputService.emit_captured`` so
+        the user still sees what went wrong. ``line_transform`` is ignored
+        under ``capture_output`` or ``interactive`` (both conflict with
+        line-level streaming).
         """
         proxy = self._proxy_path()
         echo_str = f"docker exec -u user {self._project.container_name} {proxy} bash -c {command!r}"
@@ -224,6 +227,7 @@ class ContainerService:
             interactive=interactive,
             merge_stderr=merge_stderr,
             capture_output=capture_output,
+            line_transform=line_transform,
         )
         if result.returncode != 0 and self._recover_infrastructure():
             self._output.command_echo(echo_str)
@@ -232,6 +236,7 @@ class ContainerService:
                 interactive=interactive,
                 merge_stderr=merge_stderr,
                 capture_output=capture_output,
+                line_transform=line_transform,
             )
         if capture_output and result.returncode != 0:
             if result.stdout:

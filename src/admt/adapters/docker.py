@@ -19,17 +19,23 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 from admt.exceptions import ContainerError
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
     from pathlib import Path
+    from typing import TextIO
 
-    _Register = Callable[[subprocess.Popen[bytes]], None]
+    # Popen[Any] widens across byte-mode (``_spawn_tracked``) and text-mode
+    # (``_run_streaming_transform``, which sets ``text=True``); the registry
+    # only needs ``.pid`` and ``.poll()`` which are stream-type-agnostic.
+    _Register = Callable[[subprocess.Popen[Any]], None]
+    LineTransform = Callable[[str], str | None]
 
 
 # Bounded calls -- status probes, env snapshot capture, short informational
@@ -41,7 +47,7 @@ _BOUNDED_TIMEOUT_SECS = 60
 # Tracks active ``docker compose`` subprocesses so ``main.py``'s SIGINT
 # handler can list their PIDs on Ctrl-C. Appended/removed by streaming
 # methods; treat as module-private state.
-_active_processes: list[subprocess.Popen[bytes]] = []
+_active_processes: list[subprocess.Popen[Any]] = []
 
 
 def iter_active_pids() -> list[int]:
@@ -128,7 +134,7 @@ class DockerAdapter:
     # Exec and inspect: target the container directly, bypass compose.
     # ------------------------------------------------------------------
 
-    def docker_exec(
+    def docker_exec(  # noqa: PLR0913 -- 6 orthogonal I/O knobs (mode + routing); bundling hurts clarity
         self,
         command: list[str],
         *,
@@ -136,6 +142,7 @@ class DockerAdapter:
         user: str = "user",
         merge_stderr: bool = False,
         capture_output: bool = False,
+        line_transform: LineTransform | None = None,
     ) -> CommandResult:
         """Run ``command`` inside the container via ``docker exec``.
 
@@ -148,6 +155,13 @@ class DockerAdapter:
         subprocess boundary, ``capture_output`` swaps streaming for
         buffered capture (used by ``--quiet``). No timeout on streaming
         or capture variants -- user-bounded builds can run for minutes.
+
+        ``line_transform`` (streaming mode only) intercepts each stdout
+        line: the returned string is written to ``sys.stdout`` in place
+        of the original, or ``None`` drops the line entirely. Used to
+        rewrite redo's progress lines into admt-vocabulary equivalents.
+        Ignored when ``interactive`` (can't pipe a shell) or when
+        ``capture_output`` (the caller post-processes the buffer).
         """
         args = ["exec", "-u", user]
         args.append("-it" if interactive else "-i")
@@ -174,6 +188,8 @@ class DockerAdapter:
                 stdout=completed.stdout or "",
                 stderr=completed.stderr or "",
             )
+        if line_transform is not None and not interactive:
+            return self._run_streaming_transform(cmd, line_transform, merge_stderr=merge_stderr)
         stderr = subprocess.STDOUT if merge_stderr else None
         return CommandResult(returncode=self._spawn_tracked(cmd, stderr=stderr))
 
@@ -308,6 +324,54 @@ class DockerAdapter:
             proc = subprocess.Popen(cmd, stderr=stderr)
             register(proc)
             return proc.wait()
+
+    @staticmethod
+    def _run_streaming_transform(
+        cmd: list[str],
+        transform: LineTransform,
+        *,
+        merge_stderr: bool,
+    ) -> CommandResult:
+        """Feed each stdout line of ``cmd`` through ``transform`` in real time.
+
+        The child's stdout is captured through a pipe (so we can intercept
+        lines) but we stream them out as they arrive -- no full-buffer
+        capture. ``bufsize=1`` makes Python line-buffer its read side; the
+        child process may still block-buffer under piping since its stdout
+        is no longer a TTY. For MVP the tradeoff favors simplicity over a
+        pseudo-terminal; redo's bash-based progress lines line-buffer
+        naturally and arrive promptly in practice.
+
+        ``transform`` returns the rewritten line (written with a trailing
+        newline added if missing), or ``None`` to drop the line entirely
+        -- used to suppress redo's redundant top-level status marker.
+
+        ``errors='replace'`` on decoding keeps one malformed byte from
+        killing the whole stream -- important because build output is
+        untrusted.
+        """
+        stderr_arg = subprocess.STDOUT if merge_stderr else None
+        with _track_subprocess() as register:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=stderr_arg,
+                text=True,
+                bufsize=1,
+                errors="replace",
+            )
+            register(proc)
+            # ``stdout=subprocess.PIPE`` guarantees proc.stdout is non-None;
+            # cast narrows for mypy without a runtime check (which would be
+            # an unreachable branch for coverage purposes).
+            stdout = cast("TextIO", proc.stdout)
+            for line in stdout:
+                result = transform(line)
+                if result is None:
+                    continue
+                sys.stdout.write(result if result.endswith("\n") else result + "\n")
+                sys.stdout.flush()
+            return CommandResult(returncode=proc.wait())
 
     def _run_streaming(self, compose_args: list[str]) -> CommandResult:
         """Spawn ``docker compose ...`` with inherited stdio; no timeout.
