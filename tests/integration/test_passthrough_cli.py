@@ -115,16 +115,18 @@ def test_what_uses_exec_captured_and_transforms(registered, mock_container, tmp_
     monkeypatch.chdir(root)
     mock_container.exec_captured.return_value = CommandResult(
         returncode=0,
-        stdout="redo  what\nredo all\nredo test_all\nredo build/dot/foo.dot\n",
+        stdout="redo  what\nredo all\nredo test\nredo test_all\nredo build/dot/foo.dot\n",
     )
     result = runner.invoke(cli, ["what"], env=_env_vars(tmp_path))
     assert result.exit_code == 0, result.output
     # Transformation happened:
     assert "admt build" in result.output
-    assert "admt test --all" in result.output
+    assert "admt test" in result.output
     assert "admt build build/dot/foo.dot" in result.output
     # "redo  what" header was dropped.
     assert "redo  what" not in result.output
+    # ``--all`` variants are dropped from the listing -- implicit via flag.
+    assert "admt test --all" not in result.output
     # exec_captured was used, not exec.
     mock_container.exec_captured.assert_called_once()
     mock_container.exec.assert_not_called()

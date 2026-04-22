@@ -49,7 +49,10 @@ def test_transform_maps_known_named_targets():
     ]
 
 
-def test_transform_maps_all_suffix_variants():
+def test_transform_drops_all_suffix_variants():
+    # ``--all`` is expressed via flag, not as a separate target. Dropping
+    # these avoids listing ``admt test`` and ``admt test --all`` side by
+    # side in the output.
     out = dedent(
         """\
         redo test_all
@@ -60,14 +63,7 @@ def test_transform_maps_all_suffix_variants():
         redo publish_all
         """
     )
-    assert WhatCommand._transform(out) == [
-        "admt test --all",
-        "admt style --all",
-        "admt analyze --all",
-        "admt clean --all",
-        "admt coverage --all",
-        "admt publish --all",
-    ]
+    assert WhatCommand._transform(out) == []
 
 
 def test_transform_fallback_to_admt_build_target():
@@ -128,7 +124,7 @@ def test_execute_captures_redo_output_and_transforms(make_context):
     container = MagicMock(spec=ContainerService)
     container.exec_captured.return_value = CommandResult(
         returncode=0,
-        stdout="redo  what\nredo all\nredo test_all\n",
+        stdout="redo  what\nredo all\nredo test\nredo test_all\n",
     )
     mapper = PathMapperService({Path("/sim/proj"): Path("/home/user/proj")})
     ctx = make_context(path_mapper=mapper, container_service=container, path=Path("/sim/proj"))
@@ -137,10 +133,11 @@ def test_execute_captures_redo_output_and_transforms(make_context):
     # exec_captured was called with the redo-what command.
     redo_cmd = container.exec_captured.call_args.args[0]
     assert redo_cmd == "cd /home/user/proj && redo what"
-    # The transformed list was emitted.
     info_lines = [call.args[0] for call in ctx.output.info.call_args_list]
     assert "admt build" in info_lines
-    assert "admt test --all" in info_lines
+    assert "admt test" in info_lines
+    # ``--all`` variants are dropped -- implicit via flag, not a separate target.
+    assert "admt test --all" not in info_lines
 
 
 def test_execute_propagates_non_zero_exit_and_emits_captured(make_context):

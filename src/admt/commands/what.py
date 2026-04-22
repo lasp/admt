@@ -6,6 +6,11 @@ listed target rewritten to its admt-equivalent command via
 unknown targets fall back to ``admt build <target>`` because BuildCommand
 forwards arbitrary targets through to redo.
 
+``--all`` variants (e.g. ``admt test --all``) are filtered out because
+they're the same commands with a flag, not independent targets -- the
+user already has them via ``admt <cmd> --help`` and listing both forms
+clutters the output.
+
 This command uses capture mode (not streaming) because the listing is
 short, self-contained, and benefits from the extra post-processing pass.
 """
@@ -22,6 +27,14 @@ from admt.exceptions import ContainerError
 
 if TYPE_CHECKING:
     from admt.context import Context
+
+
+# Admt-side mappings of redo's ``<verb>_all`` targets. These are dropped
+# from ``admt what`` output -- they duplicate the non-``--all`` verb with
+# just a flag difference, which ``admt <cmd> --help`` already documents.
+_IMPLICIT_ALL_VARIANTS: frozenset[str] = frozenset(
+    f"admt {verb} --all" for verb in ("test", "style", "analyze", "clean", "coverage", "publish")
+)
 
 
 class WhatCommand(ContainerPassthroughCommand):
@@ -49,11 +62,11 @@ class WhatCommand(ContainerPassthroughCommand):
 
     @staticmethod
     def _transform(output: str) -> list[str]:
-        """Split ``redo what`` output into lines and rewrite each one.
+        """Split ``redo what`` output into lines, rewrite, drop ``--all`` variants.
 
-        Thin wrapper over ``rewrite_line`` that also filters out blank
-        lines (``redo what`` has none, but ANSI-wrapped or extra-newline
-        output shouldn't produce blank entries in the listing).
+        Blank lines (``redo what`` doesn't emit any in practice, but ANSI-
+        wrapped or extra-newline output shouldn't produce blank entries)
+        and ``admt <verb> --all`` duplicates are filtered out.
         """
         lines: list[str] = []
         for raw in output.splitlines():
@@ -62,6 +75,8 @@ class WhatCommand(ContainerPassthroughCommand):
                 continue
             stripped = result.rstrip()
             if not stripped:
+                continue
+            if stripped in _IMPLICIT_ALL_VARIANTS:
                 continue
             lines.append(stripped)
         return lines
