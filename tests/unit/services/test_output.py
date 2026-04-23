@@ -175,12 +175,17 @@ def test_command_echo_survives_quiet_when_verbose(capsys):
 # ----- ANSI color handling -----
 
 
-def test_success_emits_green_when_stdout_is_tty(capsys):
+def test_success_emits_gold_non_bold_when_stdout_is_tty(capsys):
+    # Success announcements share admt's non-bold gold tier with closing
+    # ``done.`` lines and redo-relayed status phases -- admt's voice, no
+    # emphatic weight.
     with patch("sys.stdout.isatty", return_value=True), patch.dict(os.environ, {}, clear=False):
         os.environ.pop("NO_COLOR", None)
         _svc().success("all good")
     captured = capsys.readouterr()
-    assert "\033[32m" in captured.out
+    assert "\033[38;2;207;184;124m" in captured.out
+    # Bold SGR is NOT prepended on success lines.
+    assert "\033[1m" not in captured.out
     assert "\033[0m" in captured.out
 
 

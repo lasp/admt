@@ -21,7 +21,6 @@ if TYPE_CHECKING:
 
 
 _ANSI_RESET = "\033[0m"
-_ANSI_GREEN = "\033[32m"
 _ANSI_YELLOW = "\033[33m"
 _ANSI_RED = "\033[31m"
 _ANSI_DIM = "\033[2m"
@@ -86,10 +85,15 @@ class OutputService:
         self._write(sys.stdout, message)
 
     def success(self, message: str) -> None:
-        """Print a green success message to stdout (suppressed when ``--quiet``)."""
+        """Print a gold (non-bold) success message to stdout (suppressed when ``--quiet``).
+
+        Admt's voice is gold; success announcements share the non-bold tier
+        with closing ``done.`` lines and redo-relayed status phases --
+        admt-authored text that isn't an emphatic verb or opening framing.
+        """
         if self._quiet:
             return
-        self._write(sys.stdout, self._colorize(sys.stdout, _ANSI_GREEN, message))
+        self._write(sys.stdout, self._colorize(sys.stdout, _ANSI_GOLD_FG, message))
 
     def warning(self, message: str) -> None:
         """Print a yellow warning message to stderr."""

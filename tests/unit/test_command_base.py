@@ -276,7 +276,12 @@ def test_passthrough_status_verb_emits_static_line(make_context):
 
 
 def test_passthrough_emits_done_after_successful_exec(make_context):
-    """Status-verb commands print ``:done.`` in admt gold after exec returns 0."""
+    """Status-verb commands print ``done.`` in non-bold gold after exec returns 0.
+
+    ``done.`` is grouped with the non-bold announcement tier (``success()``,
+    redo status phases) rather than the bold opening-frame tier -- closing
+    markers need less emphasis than the opening.
+    """
 
     class Fake(ContainerPassthroughCommand):
         name = "fake"
@@ -287,10 +292,11 @@ def test_passthrough_emits_done_after_successful_exec(make_context):
     ctx, _container = _passthrough_ctx(make_context, path=Path("/sim/proj"))
     Fake().execute(ctx)
     info_lines = [call.args[0] for call in ctx.output.info.call_args_list]
-    admt_calls = [call.args[0] for call in ctx.output.admt.call_args_list]
-    # Opening status, then :done. -- :done. lands last and goes through admt().
+    done_calls = [c for c in ctx.output.admt.call_args_list if c.args == ("done.",)]
     assert info_lines[-1] == "done."
-    assert "done." in admt_calls
+    assert done_calls
+    # admt() is called with bold=False for closing ``done.``.
+    assert done_calls[-1].kwargs.get("bold") is False
 
 
 def test_passthrough_suppresses_done_on_non_zero_exit(make_context):

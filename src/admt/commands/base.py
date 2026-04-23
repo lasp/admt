@@ -131,11 +131,11 @@ class ContainerPassthroughCommand(Command):
         and is only shown on failure via ``emit_captured``.
 
         ``status_verb`` frames the streaming output on success:
-        ``<verb>...`` opens the stream before exec starts, then
-        ``done.`` closes it on exit 0. Both are routed through
-        ``output.admt`` so they render in admt's signature bold gold --
-        distinct from transformed verbs (``build foo``) and any
-        pass-through tool output. On failure the closing line is
+        ``<verb>...`` opens the stream in bold + gold (admt's emphatic
+        framing) and ``done.`` closes it on exit 0 in gold-only --
+        grouping it with the non-bold announcement tier (``success()``
+        messages, redo-relayed status phases) since a closing marker
+        isn't as loud as an opening one. On failure the closing line is
         suppressed -- the adapter's ``Failed (exit N): <cmd>``
         diagnostic is the signal there.
         """
@@ -155,5 +155,5 @@ class ContainerPassthroughCommand(Command):
             line_transform=None if context.quiet else _colored_streaming_transform(context.output),
         )
         if exit_code == 0 and self.status_verb:
-            context.output.info(context.output.admt("done."))
+            context.output.info(context.output.admt("done.", bold=False))
         return Result(exit_code=exit_code)
