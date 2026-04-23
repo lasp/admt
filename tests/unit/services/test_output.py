@@ -249,6 +249,23 @@ def test_admt_returns_plain_when_no_color_env_set(monkeypatch):
         assert _svc().admt("building...") == "building..."
 
 
+def test_admt_bold_false_wraps_in_gold_without_bold():
+    # bold=False is for admt-relayed tool messages (e.g. redo status
+    # phases) -- gold only, no bold weight.
+    with patch("sys.stdout.isatty", return_value=True), patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("NO_COLOR", None)
+        wrapped = _svc().admt("Compiling 13 objects...", bold=False)
+    assert wrapped.startswith("\033[38;2;207;184;124m")
+    # Bold SGR is NOT prepended.
+    assert not wrapped.startswith("\033[1m")
+    assert wrapped.endswith("\033[0m")
+    assert "Compiling 13 objects..." in wrapped
+
+
+def test_admt_bold_false_returns_plain_when_no_tty():
+    assert _svc().admt("Compiling 13 objects...", bold=False) == "Compiling 13 objects..."
+
+
 # ----- emit_captured -----
 
 

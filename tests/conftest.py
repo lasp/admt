@@ -33,9 +33,11 @@ def make_context():
         # on the literal text of ``info(...)`` calls don't have to configure
         # the mock per-test. Tests that care about the gold coloring
         # behavior assert directly against OutputService (unit) or set a
-        # different side_effect on the mock.
+        # different side_effect on the mock. The ``bold`` kwarg is
+        # accepted to mirror the real signature -- bold=False is how
+        # admt-relayed redo status messages route through.
         output_mock = MagicMock(spec=OutputService)
-        output_mock.admt.side_effect = lambda message: message
+        output_mock.admt.side_effect = lambda message, *, bold=True: message
         defaults = {
             "config_service": MagicMock(spec=ConfigService),
             "output": output_mock,

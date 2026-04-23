@@ -173,6 +173,29 @@ def test_passthrough_streaming_transform_drops_top_level_redo_header(make_contex
     assert transform("redo  all") is None
 
 
+def test_passthrough_streaming_transform_tints_redo_status_gold_non_bold(make_context):
+    """Multi-word ``redo <status>`` lines route through admt(bold=False)."""
+
+    class Fake(ContainerPassthroughCommand):
+        name = "fake"
+        help = "fake"
+        redo_target = "all"
+
+    ctx, container = _passthrough_ctx(make_context, path=Path("/sim/proj"))
+    ctx.output.admt.side_effect = lambda message, *, bold=True: (
+        f"<BOLD>{message}<RESET>" if bold else f"<GOLD>{message}<RESET>"
+    )
+    Fake().execute(ctx)
+    transform = container.exec.call_args.kwargs["line_transform"]
+    # ``redo  Compiling 13 objects...`` is admt-relayed status: gold, not bold.
+    assert transform("redo  Compiling 13 objects...") == "<GOLD>Compiling 13 objects...<RESET>"
+    # admt() was called with bold=False for the status line.
+    admt_calls = ctx.output.admt.call_args_list
+    status_calls = [c for c in admt_calls if c.args and c.args[0] == "Compiling 13 objects..."]
+    assert status_calls
+    assert status_calls[-1].kwargs.get("bold") is False
+
+
 def test_passthrough_streaming_transform_leaves_pass_through_uncolored(make_context):
     """Pass-through lines (compiler output) keep their original bytes; no
     call to ``output.admt`` is made for them so their own ANSI survives."""

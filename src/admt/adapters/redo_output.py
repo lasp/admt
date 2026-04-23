@@ -46,6 +46,14 @@ _TARGET_MAP: dict[str, str] = {
 
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
 _REDO_LINE = re.compile(r"^redo(?P<spaces> +)(?P<target>\S+)\s*$")
+# Multi-word ``redo <text>`` lines -- redo's own status messages for
+# high-level phase transitions (``redo  Compiling 13 objects...``,
+# ``redo  Moving 13 objects...``). Distinguished from target progress
+# (``redo  build/foo.o``) by having two or more whitespace-separated
+# tokens after ``redo``. Normal redo target progress is always a single
+# token (a path or name without spaces); multi-token output is redo's
+# human-readable status phase.
+_REDO_STATUS_MESSAGE = re.compile(r"^redo\s+(?P<message>\S+(?:\s+\S+)+)\s*$")
 # Redo's top-level progress marker: ``redo  <target>`` with exactly two
 # spaces. Nested dependency rebuilds use four or more spaces.
 _OUTER_SPACES = 2
@@ -96,6 +104,25 @@ def rewrite_line(raw: str) -> str | None:
     extra = max(0, spaces - _FIRST_NESTED_SPACES)
     separator = " " * (1 + extra)
     return f"admt build{separator}{target}"
+
+
+def match_redo_status(raw: str) -> str | None:
+    """Return the message of a ``redo <multi-word text>`` status line, or None.
+
+    Matches lines like ``redo  Compiling 13 objects...`` where the text
+    after ``redo`` has two or more whitespace-separated tokens. Returns
+    the message (without the ``redo `` prefix); callers style it
+    separately from verb rewrites (typically gold without the bold
+    weight that verbs carry).
+
+    Returns ``None`` for single-token ``redo <target>`` lines (those go
+    through ``rewrite_line``) and for non-redo lines. ANSI escapes are
+    stripped before matching so redo's colored status lines are
+    recognized even when stdout was a TTY on redo's end.
+    """
+    clean = _ANSI_ESCAPE.sub("", raw).rstrip()
+    match = _REDO_STATUS_MESSAGE.match(clean)
+    return match.group("message") if match else None
 
 
 def rewrite_line_terse(raw: str) -> str | None:

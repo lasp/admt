@@ -13,7 +13,7 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, ClassVar
 
 from admt.adapters.redo import RedoAdapter
-from admt.adapters.redo_output import rewrite_line_terse, split_verb
+from admt.adapters.redo_output import match_redo_status, rewrite_line_terse, split_verb
 from admt.context import Result
 from admt.exceptions import ContainerError
 
@@ -24,18 +24,28 @@ if TYPE_CHECKING:
 
 
 def _colored_streaming_transform(output: OutputService) -> LineTransform:
-    """Build a streaming transform that tints the admt verb gold.
+    """Build a streaming transform that tints admt-originated lines.
 
-    Lines that ``rewrite_line_terse`` actually rewrote (``redo    foo`` ->
-    ``build foo``) get their verb head tinted via ``output.admt``; the
-    target and any trailing content stay in the terminal's default color
-    so paths remain readable and compiler-style tool output isn't
-    overwritten. Pass-through lines (rewrite returned the input unchanged)
-    are forwarded verbatim -- they carry their own ANSI and aren't
-    admt's words.
+    Three kinds of line get three different treatments:
+
+    1. Multi-word redo status (``redo  Compiling 13 objects...``) --
+       admt-relayed tool status. The ``redo `` prefix is dropped and the
+       message is tinted gold *without* bold, so it reads as an
+       intermediate-weight marker between bold verbs and raw tool
+       output.
+    2. Single-token redo target progress (``redo    build/foo.adb``) --
+       rewritten to ``build build/foo.adb`` (or the mapped verb), with
+       the verb head in bold + gold via ``output.admt`` and the target
+       tail left in the terminal's default color.
+    3. Pass-through (compiler output, warnings, anything the rewrite
+       didn't touch) -- forwarded verbatim so the underlying tool's
+       own ANSI and colors survive.
     """
 
     def transform(raw: str) -> str | None:
+        status = match_redo_status(raw)
+        if status is not None:
+            return output.admt(status, bold=False)
         result = rewrite_line_terse(raw)
         if result is None:
             return None

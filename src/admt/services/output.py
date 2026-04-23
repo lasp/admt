@@ -25,22 +25,21 @@ _ANSI_GREEN = "\033[32m"
 _ANSI_YELLOW = "\033[33m"
 _ANSI_RED = "\033[31m"
 _ANSI_DIM = "\033[2m"
-# admt's signature styling: bold + pale gold #CFB87C (24-bit truecolor
-# RGB 207/184/124). The bold weight plus warm muted gold reads as a
-# clear admt marker across common light and dark terminal themes
-# without the saturation that makes plain ``\033[33m`` or 256-color
-# index 220 feel aggressive on long multi-line output. Used to mark
-# output that originated from admt itself (status verbs, ``done.``,
-# transformed redo verbs, the ``what`` listing) so the user can
-# visually distinguish admt's framing from raw tool output passing
-# through. Requires truecolor terminal support, which every modern
-# terminal (xterm-256color-era and beyond) has.
-#
-# Bold and color are emitted as two separate SGR sequences because some
-# terminals strip the ``1`` (bold) attribute when it's combined with a
-# 24-bit RGB color in a single ``\033[1;38;2;...m``; separating them
-# guarantees the weight is applied regardless.
-_ANSI_GOLD = "\033[1m\033[38;2;207;184;124m"
+# admt's signature color: pale gold #CFB87C (24-bit truecolor RGB
+# 207/184/124). Reads as a warm muted gold across common light and dark
+# terminal themes without the saturation that makes plain ``\033[33m``
+# or 256-color index 220 feel aggressive on long multi-line output.
+# Used to mark output originated from admt itself (verbs, status
+# framing, ``what`` listing) or relayed through admt (redo's multi-word
+# status lines). Requires truecolor terminal support, which every
+# modern terminal (xterm-256color-era and beyond) has.
+_ANSI_GOLD_FG = "\033[38;2;207;184;124m"
+# admt's emphatic styling = bold + gold. Emitted as two separate SGR
+# sequences because some terminals strip the ``1`` (bold) attribute
+# when it's combined with a 24-bit RGB color in a single
+# ``\033[1;38;2;...m``; separating them guarantees the weight is
+# applied regardless.
+_ANSI_GOLD = "\033[1m" + _ANSI_GOLD_FG
 
 
 class OutputService:
@@ -112,16 +111,24 @@ class OutputService:
             return
         self._write(sys.stdout, self._colorize(sys.stdout, _ANSI_DIM, f"$ {command}"))
 
-    def admt(self, message: str) -> str:
+    def admt(self, message: str, *, bold: bool = True) -> str:
         """Wrap ``message`` in admt's signature gold when color is enabled.
 
+        ``bold=True`` (default) applies bold + gold -- the full signature
+        styling for admt verbs (``build`` in ``build foo.adb``), opening
+        status (``building...``), and closing ``done.``.
+
+        ``bold=False`` applies gold only, no bold weight. Used for
+        admt-relayed tool messages like redo's multi-word status lines
+        (``Compiling 13 objects...``) -- admt-originated in presentation
+        (we forward them as the admt view of what's happening) but
+        without the weight of a verb.
+
         Returns the plain message unchanged when stdout is not a TTY or
-        ``NO_COLOR`` is set, so callers can wrap unconditionally and rely
-        on the standard no-color semantics. Not a write method -- use the
-        result in ``info``/``emit_captured`` or pass it through the
-        streaming transform.
+        ``NO_COLOR`` is set, so callers can wrap unconditionally.
         """
-        return self._colorize(sys.stdout, _ANSI_GOLD, message)
+        code = _ANSI_GOLD if bold else _ANSI_GOLD_FG
+        return self._colorize(sys.stdout, code, message)
 
     def emit_captured(self, content: str, *, to_stderr: bool = False) -> None:
         """Emit captured subprocess output verbatim, bypassing ``--quiet``.
