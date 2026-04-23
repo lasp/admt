@@ -15,16 +15,17 @@ def test_rewrite_line_drops_top_level_header_with_trailing_newline():
     assert rewrite_line("redo  all\n") is None
 
 
-def test_rewrite_line_transforms_first_level_nested_flush_left():
-    # Four spaces = first-level rebuild; first visible depth, no indent.
+def test_rewrite_line_transforms_first_level_nested_with_default_spacing():
+    # Four spaces in redo = first-level rebuild; separator is a single space.
     assert rewrite_line("redo    build/src/foo.adb") == "admt build build/src/foo.adb"
 
 
-def test_rewrite_line_preserves_depth_indent_for_deeper_rebuilds():
-    # Each extra pair of spaces in redo = two more spaces of visible indent.
-    assert rewrite_line("redo      types/foo.html") == "  admt build types/foo.html"
-    assert rewrite_line("redo        types/foo.yaml") == "    admt build types/foo.yaml"
-    assert rewrite_line("redo          types/foo.o") == "      admt build types/foo.o"
+def test_rewrite_line_encodes_depth_in_separator_between_verb_and_target():
+    # Verb is flush-left; deeper depths push the target right via extra
+    # spaces between ``admt build`` and the target.
+    assert rewrite_line("redo      types/foo.html") == "admt build   types/foo.html"
+    assert rewrite_line("redo        types/foo.yaml") == "admt build     types/foo.yaml"
+    assert rewrite_line("redo          types/foo.o") == "admt build       types/foo.o"
 
 
 def test_rewrite_line_maps_named_target_single_space_listing():
@@ -72,10 +73,10 @@ def test_rewrite_line_terse_strips_admt_prefix_from_build_fallback():
     assert rewrite_line_terse("redo    build/src/foo.adb") == "build build/src/foo.adb"
 
 
-def test_rewrite_line_terse_preserves_depth_indent_while_stripping_prefix():
-    # Deep rebuilds: indent preserved, ``admt `` that follows the indent is dropped.
-    assert rewrite_line_terse("redo      types/foo.html") == "  build types/foo.html"
-    assert rewrite_line_terse("redo        types/foo.yaml") == "    build types/foo.yaml"
+def test_rewrite_line_terse_preserves_depth_separator_while_stripping_prefix():
+    # Deep rebuilds: separator-encoded depth preserved, ``admt `` prefix dropped.
+    assert rewrite_line_terse("redo      types/foo.html") == "build   types/foo.html"
+    assert rewrite_line_terse("redo        types/foo.yaml") == "build     types/foo.yaml"
 
 
 def test_rewrite_line_terse_propagates_none_for_dropped_header():

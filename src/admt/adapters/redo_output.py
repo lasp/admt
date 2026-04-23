@@ -66,12 +66,14 @@ def rewrite_line(raw: str) -> str | None:
       unchanged (ANSI preserved -- compiler diagnostics keep their colors).
     * The top-level ``redo  <target>`` status line (exactly two spaces)
       returns ``None``. Callers should skip it.
-    * ``redo what`` listings (one space) and first-level nested rebuilds
-      (four spaces) return flush-left, e.g. ``admt build`` or
-      ``admt build build/src/foo.adb``.
-    * Deeper nested rebuilds keep their visual depth -- the rewritten line
-      is prefixed with ``spaces - 4`` leading spaces so a six-level redo
-      chain still looks like a six-level tree after rewriting.
+    * Mapped verbs (``redo all``, ``redo test``, ``redo test_all`` etc.)
+      return just the verb -- there is no target text to attach spacing to.
+    * File-ish ``redo <path>`` lines fall back to ``admt build <path>``
+      with the depth encoded in the separator between the verb and the
+      target: one space at the first nested level, two more for each
+      extra depth. The verb stays flush-left so the column of the admt
+      action is stable; the target drifts right with depth so the
+      dependency tree is still legible.
 
     Input may or may not include a trailing newline -- callers that stream
     lines from ``Popen.stdout`` pass them through verbatim. ANSI escapes
@@ -86,9 +88,14 @@ def rewrite_line(raw: str) -> str | None:
     if spaces == _OUTER_SPACES:
         return None
     target = match.group("target")
-    body = _TARGET_MAP.get(target, f"admt build {target}")
-    indent = " " * max(0, spaces - _FIRST_NESTED_SPACES)
-    return f"{indent}{body}"
+    if target in _TARGET_MAP:
+        return _TARGET_MAP[target]
+    # Fallback: ``admt build <target>``. Encode redo's extra depth spaces
+    # in the separator so the verb is flush-left and deeper rebuilds push
+    # the target right.
+    extra = max(0, spaces - _FIRST_NESTED_SPACES)
+    separator = " " * (1 + extra)
+    return f"admt build{separator}{target}"
 
 
 def rewrite_line_terse(raw: str) -> str | None:
@@ -100,14 +107,10 @@ def rewrite_line_terse(raw: str) -> str | None:
     prefix via ``rewrite_line`` because its output is reference material
     that the user copy-pastes to run.
 
-    Any leading indent produced by ``rewrite_line`` (preserved from
-    redo's nested rebuild depth) is kept -- only the ``admt `` prefix that
-    follows the indent is dropped. Pass-through lines don't carry the
-    prefix, so ``removeprefix`` is a no-op on them.
+    Depth-encoded spacing between verb and target (from ``rewrite_line``)
+    is preserved verbatim; only the ``admt `` prefix at the head of the
+    line is dropped. Pass-through lines don't carry the prefix, so
+    ``removeprefix`` is a no-op on them.
     """
     result = rewrite_line(raw)
-    if result is None:
-        return None
-    lstripped = result.lstrip(" ")
-    indent = result[: len(result) - len(lstripped)]
-    return indent + lstripped.removeprefix("admt ")
+    return None if result is None else result.removeprefix("admt ")
