@@ -114,3 +114,36 @@ def rewrite_line_terse(raw: str) -> str | None:
     """
     result = rewrite_line(raw)
     return None if result is None else result.removeprefix("admt ")
+
+
+# Known admt verbs for ``split_verb`` -- both the full ``admt <x>`` form
+# (what's in _TARGET_MAP) and the terse form with ``admt `` stripped
+# (what streaming emits). Sorted longest-first so ``admt test --all``
+# matches before ``admt test`` and ``test --all`` before ``test``.
+_VERB_CHOICES: tuple[str, ...] = tuple(
+    sorted(
+        {*_TARGET_MAP.values(), *(v.removeprefix("admt ") for v in _TARGET_MAP.values())},
+        key=len,
+        reverse=True,
+    )
+)
+
+
+def split_verb(line: str) -> tuple[str, str]:
+    """Split ``line`` at the admt verb boundary; return ``(verb, rest)``.
+
+    Matches the longest known verb (full or terse) at the head of the
+    line; the rest is whatever follows, inclusive of the separator
+    whitespace. Used by callers that tint the verb in admt's signature
+    color while leaving the target and any trailing tool output in the
+    terminal's default color.
+
+    Pass-through lines (compiler warnings etc.) that don't start with a
+    known verb return ``("", line)`` so callers can leave them as-is.
+    """
+    for verb in _VERB_CHOICES:
+        if line == verb:
+            return verb, ""
+        if line.startswith(verb + " "):
+            return verb, line[len(verb) :]
+    return "", line

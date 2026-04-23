@@ -222,6 +222,30 @@ def test_info_is_never_colored(capsys):
     assert "\033[" not in captured.out
 
 
+# ----- admt signature color -----
+
+
+def test_admt_wraps_in_gold_when_stdout_is_color_tty():
+    # 256-color index 220 = admt's signature gold.
+    with patch("sys.stdout.isatty", return_value=True), patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("NO_COLOR", None)
+        wrapped = _svc().admt("building...")
+    assert wrapped.startswith("\033[38;5;220m")
+    assert wrapped.endswith("\033[0m")
+    assert "building..." in wrapped
+
+
+def test_admt_returns_plain_when_stdout_is_not_tty():
+    # capsys's capture is not a TTY -- plain text.
+    assert _svc().admt("building...") == "building..."
+
+
+def test_admt_returns_plain_when_no_color_env_set(monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    with patch("sys.stdout.isatty", return_value=True):
+        assert _svc().admt("building...") == "building..."
+
+
 # ----- emit_captured -----
 
 

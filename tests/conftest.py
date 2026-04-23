@@ -29,9 +29,16 @@ def make_context():
     """Return a factory that builds a Context with MagicMock services."""
 
     def _factory(**overrides):
+        # ``output.admt()`` is a passthrough by default so tests that assert
+        # on the literal text of ``info(...)`` calls don't have to configure
+        # the mock per-test. Tests that care about the gold coloring
+        # behavior assert directly against OutputService (unit) or set a
+        # different side_effect on the mock.
+        output_mock = MagicMock(spec=OutputService)
+        output_mock.admt.side_effect = lambda message: message
         defaults = {
             "config_service": MagicMock(spec=ConfigService),
-            "output": MagicMock(spec=OutputService),
+            "output": output_mock,
         }
         defaults.update(overrides)
         return Context(**defaults)

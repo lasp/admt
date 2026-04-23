@@ -25,6 +25,14 @@ _ANSI_GREEN = "\033[32m"
 _ANSI_YELLOW = "\033[33m"
 _ANSI_RED = "\033[31m"
 _ANSI_DIM = "\033[2m"
+# admt's signature color. 256-color index 220 renders as a warm gold on
+# both light and dark terminal themes -- plain ``\033[33m`` (standard
+# yellow) reads as muddy brown on many dark themes and as washed-out on
+# light ones. Used to mark output that originated from admt itself
+# (status verbs, ``done.``, transformed redo lines, the ``what`` listing)
+# so the user can visually distinguish admt's framing from raw tool
+# output passing through.
+_ANSI_GOLD = "\033[38;5;220m"
 
 
 class OutputService:
@@ -95,6 +103,17 @@ class OutputService:
         if not self._verbose:
             return
         self._write(sys.stdout, self._colorize(sys.stdout, _ANSI_DIM, f"$ {command}"))
+
+    def admt(self, message: str) -> str:
+        """Wrap ``message`` in admt's signature gold when color is enabled.
+
+        Returns the plain message unchanged when stdout is not a TTY or
+        ``NO_COLOR`` is set, so callers can wrap unconditionally and rely
+        on the standard no-color semantics. Not a write method -- use the
+        result in ``info``/``emit_captured`` or pass it through the
+        streaming transform.
+        """
+        return self._colorize(sys.stdout, _ANSI_GOLD, message)
 
     def emit_captured(self, content: str, *, to_stderr: bool = False) -> None:
         """Emit captured subprocess output verbatim, bypassing ``--quiet``.

@@ -13,12 +13,40 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, ClassVar
 
 from admt.adapters.redo import RedoAdapter
-from admt.adapters.redo_output import rewrite_line_terse
+from admt.adapters.redo_output import rewrite_line_terse, split_verb
 from admt.context import Result
 from admt.exceptions import ContainerError
 
 if TYPE_CHECKING:
+    from admt.adapters.docker import LineTransform
     from admt.context import Context
+    from admt.services.output import OutputService
+
+
+def _colored_streaming_transform(output: OutputService) -> LineTransform:
+    """Build a streaming transform that tints the admt verb gold.
+
+    Lines that ``rewrite_line_terse`` actually rewrote (``redo    foo`` ->
+    ``build foo``) get their verb head tinted via ``output.admt``; the
+    target and any trailing content stay in the terminal's default color
+    so paths remain readable and compiler-style tool output isn't
+    overwritten. Pass-through lines (rewrite returned the input unchanged)
+    are forwarded verbatim -- they carry their own ANSI and aren't
+    admt's words.
+    """
+
+    def transform(raw: str) -> str | None:
+        result = rewrite_line_terse(raw)
+        if result is None:
+            return None
+        if result.rstrip() == raw.rstrip():
+            return result
+        verb, rest = split_verb(result)
+        # Rewrites always produce one of the known verbs; ``split_verb``
+        # returns the tail as ``rest``. Tint the verb, keep the rest plain.
+        return output.admt(verb) + rest
+
+    return transform
 
 
 class Command(ABC):
@@ -103,15 +131,15 @@ class ContainerPassthroughCommand(Command):
         container_path = context.resolve_container_path()
         target = self.resolve_target(context)
         if self.status_verb:
-            context.output.info(f"{self.status_verb}...")
+            context.output.info(context.output.admt(f"{self.status_verb}..."))
         redo_cmd = RedoAdapter.build_command(target, cwd=container_path, debug=context.debug)
         exit_code = context.container_service.exec(
             redo_cmd,
             interactive=False,
             merge_stderr=True,
             capture_output=context.quiet,
-            line_transform=None if context.quiet else rewrite_line_terse,
+            line_transform=None if context.quiet else _colored_streaming_transform(context.output),
         )
         if exit_code == 0 and self.status_verb:
-            context.output.info("done.")
+            context.output.info(context.output.admt("done."))
         return Result(exit_code=exit_code)

@@ -20,7 +20,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, ClassVar
 
 from admt.adapters.redo import RedoAdapter
-from admt.adapters.redo_output import rewrite_line
+from admt.adapters.redo_output import rewrite_line, split_verb
 from admt.commands.base import ContainerPassthroughCommand
 from admt.context import Result
 from admt.exceptions import ContainerError
@@ -57,7 +57,8 @@ class WhatCommand(ContainerPassthroughCommand):
                 context.output.emit_captured(result.stdout)
             return Result(exit_code=result.returncode)
         for line in self._transform(result.stdout):
-            context.output.info(line)
+            verb, rest = split_verb(line)
+            context.output.info(context.output.admt(verb) + rest if verb else line)
         return Result(exit_code=0)
 
     @staticmethod

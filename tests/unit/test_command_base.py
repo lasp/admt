@@ -5,7 +5,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from admt.adapters.redo_output import rewrite_line_terse
 from admt.commands.base import Command, ContainerPassthroughCommand
 from admt.context import Result
 from admt.exceptions import ContainerError
@@ -143,9 +142,25 @@ def test_passthrough_threads_quiet_as_capture_output(make_context):
     assert container.exec.call_args.kwargs["capture_output"] is True
 
 
-def test_passthrough_streams_with_rewrite_line_terse(make_context):
-    """Streaming mode threads ``rewrite_line_terse`` so each progress line
-    is rewritten without the ``admt `` prefix (user already typed it)."""
+def test_passthrough_streaming_transform_tints_verb_only(make_context):
+    """Streaming mode wraps only the verb through ``output.admt`` so deeper
+    path text stays in the terminal's default color."""
+
+    class Fake(ContainerPassthroughCommand):
+        name = "fake"
+        help = "fake"
+        redo_target = "all"
+
+    ctx, container = _passthrough_ctx(make_context, path=Path("/sim/proj"))
+    ctx.output.admt.side_effect = lambda message: f"<GOLD>{message}<RESET>"
+    Fake().execute(ctx)
+    transform = container.exec.call_args.kwargs["line_transform"]
+    # ``redo    build/src/foo.adb`` -> verb ``build`` gold, target plain.
+    assert transform("redo    build/src/foo.adb") == "<GOLD>build<RESET> build/src/foo.adb"
+
+
+def test_passthrough_streaming_transform_drops_top_level_redo_header(make_context):
+    """The 2-space ``redo  <target>`` header is still dropped via None."""
 
     class Fake(ContainerPassthroughCommand):
         name = "fake"
@@ -154,7 +169,28 @@ def test_passthrough_streams_with_rewrite_line_terse(make_context):
 
     ctx, container = _passthrough_ctx(make_context, path=Path("/sim/proj"))
     Fake().execute(ctx)
-    assert container.exec.call_args.kwargs["line_transform"] is rewrite_line_terse
+    transform = container.exec.call_args.kwargs["line_transform"]
+    assert transform("redo  all") is None
+
+
+def test_passthrough_streaming_transform_leaves_pass_through_uncolored(make_context):
+    """Pass-through lines (compiler output) keep their original bytes; no
+    call to ``output.admt`` is made for them so their own ANSI survives."""
+
+    class Fake(ContainerPassthroughCommand):
+        name = "fake"
+        help = "fake"
+        redo_target = "all"
+
+    ctx, container = _passthrough_ctx(make_context, path=Path("/sim/proj"))
+    Fake().execute(ctx)
+    transform = container.exec.call_args.kwargs["line_transform"]
+    original = "gnatmake: warning: something\n"
+    assert transform(original) == original
+    # admt() was never invoked with the pass-through text.
+    admt_calls = [call.args[0] for call in ctx.output.admt.call_args_list]
+    assert "gnatmake: warning: something" not in admt_calls
+    assert "gnatmake: warning: something\n" not in admt_calls
 
 
 def test_passthrough_skips_line_transform_in_quiet_mode(make_context):
@@ -198,7 +234,7 @@ def test_passthrough_uses_resolve_target_output(make_context):
 
 
 def test_passthrough_status_verb_emits_static_line(make_context):
-    """Commands with ``status_verb`` print ``<verb>...`` before exec."""
+    """Commands with ``status_verb`` print ``<verb>...`` before exec, in gold."""
 
     class Fake(ContainerPassthroughCommand):
         name = "fake"
@@ -209,11 +245,15 @@ def test_passthrough_status_verb_emits_static_line(make_context):
     ctx, _container = _passthrough_ctx(make_context, path=Path("/sim/proj"))
     Fake().execute(ctx)
     info_lines = [call.args[0] for call in ctx.output.info.call_args_list]
+    admt_calls = [call.args[0] for call in ctx.output.admt.call_args_list]
     assert "building..." in info_lines
+    # Opening status is routed through admt() so it lands in gold when
+    # stdout is a color-friendly TTY.
+    assert "building..." in admt_calls
 
 
 def test_passthrough_emits_done_after_successful_exec(make_context):
-    """Status-verb commands print ``done.`` once the container exec returns 0."""
+    """Status-verb commands print ``done.`` in gold after exec returns 0."""
 
     class Fake(ContainerPassthroughCommand):
         name = "fake"
@@ -224,8 +264,10 @@ def test_passthrough_emits_done_after_successful_exec(make_context):
     ctx, _container = _passthrough_ctx(make_context, path=Path("/sim/proj"))
     Fake().execute(ctx)
     info_lines = [call.args[0] for call in ctx.output.info.call_args_list]
-    # Opening status, then done. -- done. lands last.
+    admt_calls = [call.args[0] for call in ctx.output.admt.call_args_list]
+    # Opening status, then done. -- done. lands last and goes through admt().
     assert info_lines[-1] == "done."
+    assert "done." in admt_calls
 
 
 def test_passthrough_suppresses_done_on_non_zero_exit(make_context):
