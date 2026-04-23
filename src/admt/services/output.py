@@ -25,16 +25,22 @@ _ANSI_GREEN = "\033[32m"
 _ANSI_YELLOW = "\033[33m"
 _ANSI_RED = "\033[31m"
 _ANSI_DIM = "\033[2m"
-# admt's signature color: pale gold #CFB87C (24-bit truecolor RGB
-# 207/184/124). Reads as a warm, muted gold across common light and
-# dark terminal themes without the saturation that makes plain
-# ``\033[33m`` or 256-color index 220 feel aggressive on long
-# multi-line output. Used to mark output that originated from admt
-# itself (status verbs, ``done.``, transformed redo lines, the ``what``
-# listing) so the user can visually distinguish admt's framing from raw
-# tool output passing through. Requires truecolor terminal support,
-# which every modern terminal (xterm-256color-era and beyond) has.
-_ANSI_GOLD = "\033[38;2;207;184;124m"
+# admt's signature styling: bold + pale gold #CFB87C (24-bit truecolor
+# RGB 207/184/124). The bold weight plus warm muted gold reads as a
+# clear admt marker across common light and dark terminal themes
+# without the saturation that makes plain ``\033[33m`` or 256-color
+# index 220 feel aggressive on long multi-line output. Used to mark
+# output that originated from admt itself (status verbs, ``done.``,
+# transformed redo verbs, the ``what`` listing) so the user can
+# visually distinguish admt's framing from raw tool output passing
+# through. Requires truecolor terminal support, which every modern
+# terminal (xterm-256color-era and beyond) has.
+#
+# Bold and color are emitted as two separate SGR sequences because some
+# terminals strip the ``1`` (bold) attribute when it's combined with a
+# 24-bit RGB color in a single ``\033[1;38;2;...m``; separating them
+# guarantees the weight is applied regardless.
+_ANSI_GOLD = "\033[1m\033[38;2;207;184;124m"
 
 
 class OutputService:

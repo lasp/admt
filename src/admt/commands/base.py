@@ -120,10 +120,14 @@ class ContainerPassthroughCommand(Command):
         In quiet mode the transform is omitted; captured output stays raw
         and is only shown on failure via ``emit_captured``.
 
-        ``status_verb`` frames the streaming output on success: ``<verb>...``
-        goes out before exec starts, then ``done.`` after exec returns 0.
-        On failure the closing line is suppressed -- the adapter's
-        ``Failed (exit N): <cmd>`` diagnostic is the signal there.
+        ``status_verb`` frames the streaming output on success:
+        ``<verb>...`` opens the stream before exec starts, then
+        ``done.`` closes it on exit 0. Both are routed through
+        ``output.admt`` so they render in admt's signature bold gold --
+        distinct from transformed verbs (``build foo``) and any
+        pass-through tool output. On failure the closing line is
+        suppressed -- the adapter's ``Failed (exit N): <cmd>``
+        diagnostic is the signal there.
         """
         if context.container_service is None:
             msg = "ContainerService was not wired for this command (CLI bug)."

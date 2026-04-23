@@ -225,12 +225,15 @@ def test_info_is_never_colored(capsys):
 # ----- admt signature color -----
 
 
-def test_admt_wraps_in_gold_when_stdout_is_color_tty():
-    # 24-bit truecolor RGB 207/184/124 = admt's signature pale gold (#CFB87C).
+def test_admt_wraps_in_bold_gold_when_stdout_is_color_tty():
+    # Bold (\033[1m) + 24-bit truecolor RGB 207/184/124 (#CFB87C) =
+    # admt's signature styling. Emitted as two separate SGR sequences
+    # so the bold attribute survives on terminals that strip it from
+    # combined ``1;38;2;...`` codes.
     with patch("sys.stdout.isatty", return_value=True), patch.dict(os.environ, {}, clear=False):
         os.environ.pop("NO_COLOR", None)
         wrapped = _svc().admt("building...")
-    assert wrapped.startswith("\033[38;2;207;184;124m")
+    assert wrapped.startswith("\033[1m\033[38;2;207;184;124m")
     assert wrapped.endswith("\033[0m")
     assert "building..." in wrapped
 

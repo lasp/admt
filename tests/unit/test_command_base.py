@@ -234,7 +234,7 @@ def test_passthrough_uses_resolve_target_output(make_context):
 
 
 def test_passthrough_status_verb_emits_static_line(make_context):
-    """Commands with ``status_verb`` print ``<verb>...`` before exec, in gold."""
+    """Commands with ``status_verb`` print ``:<verb>...`` before exec, in admt gold."""
 
     class Fake(ContainerPassthroughCommand):
         name = "fake"
@@ -253,7 +253,7 @@ def test_passthrough_status_verb_emits_static_line(make_context):
 
 
 def test_passthrough_emits_done_after_successful_exec(make_context):
-    """Status-verb commands print ``done.`` in gold after exec returns 0."""
+    """Status-verb commands print ``:done.`` in admt gold after exec returns 0."""
 
     class Fake(ContainerPassthroughCommand):
         name = "fake"
@@ -265,13 +265,13 @@ def test_passthrough_emits_done_after_successful_exec(make_context):
     Fake().execute(ctx)
     info_lines = [call.args[0] for call in ctx.output.info.call_args_list]
     admt_calls = [call.args[0] for call in ctx.output.admt.call_args_list]
-    # Opening status, then done. -- done. lands last and goes through admt().
+    # Opening status, then :done. -- :done. lands last and goes through admt().
     assert info_lines[-1] == "done."
     assert "done." in admt_calls
 
 
 def test_passthrough_suppresses_done_on_non_zero_exit(make_context):
-    """Failure path: ``Failed (exit N)`` is the signal; no ``done.`` on stdout."""
+    """Failure path: ``Failed (exit N)`` is the signal; no ``:done.`` on stdout."""
 
     class Fake(ContainerPassthroughCommand):
         name = "fake"
