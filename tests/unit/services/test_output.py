@@ -226,11 +226,11 @@ def test_info_is_never_colored(capsys):
 
 
 def test_admt_wraps_in_gold_when_stdout_is_color_tty():
-    # 256-color index 220 = admt's signature gold.
+    # 24-bit truecolor RGB 207/184/124 = admt's signature pale gold (#CFB87C).
     with patch("sys.stdout.isatty", return_value=True), patch.dict(os.environ, {}, clear=False):
         os.environ.pop("NO_COLOR", None)
         wrapped = _svc().admt("building...")
-    assert wrapped.startswith("\033[38;5;220m")
+    assert wrapped.startswith("\033[38;2;207;184;124m")
     assert wrapped.endswith("\033[0m")
     assert "building..." in wrapped
 

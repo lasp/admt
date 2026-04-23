@@ -25,14 +25,16 @@ _ANSI_GREEN = "\033[32m"
 _ANSI_YELLOW = "\033[33m"
 _ANSI_RED = "\033[31m"
 _ANSI_DIM = "\033[2m"
-# admt's signature color. 256-color index 220 renders as a warm gold on
-# both light and dark terminal themes -- plain ``\033[33m`` (standard
-# yellow) reads as muddy brown on many dark themes and as washed-out on
-# light ones. Used to mark output that originated from admt itself
-# (status verbs, ``done.``, transformed redo lines, the ``what`` listing)
-# so the user can visually distinguish admt's framing from raw tool
-# output passing through.
-_ANSI_GOLD = "\033[38;5;220m"
+# admt's signature color: pale gold #CFB87C (24-bit truecolor RGB
+# 207/184/124). Reads as a warm, muted gold across common light and
+# dark terminal themes without the saturation that makes plain
+# ``\033[33m`` or 256-color index 220 feel aggressive on long
+# multi-line output. Used to mark output that originated from admt
+# itself (status verbs, ``done.``, transformed redo lines, the ``what``
+# listing) so the user can visually distinguish admt's framing from raw
+# tool output passing through. Requires truecolor terminal support,
+# which every modern terminal (xterm-256color-era and beyond) has.
+_ANSI_GOLD = "\033[38;2;207;184;124m"
 
 
 class OutputService:
