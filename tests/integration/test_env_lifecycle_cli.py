@@ -273,3 +273,23 @@ def test_env_alias_e_for_start(registered, mock_container, tmp_path):
     result = runner.invoke(cli, ["e", "start"], env=_env_vars(tmp_path))
     assert result.exit_code == 0
     mock_container.start.assert_called_once()
+
+
+# ----- Phase 5 flag matrix (env-side) -----
+
+
+def test_verbose_flag_reaches_env_commands(registered, mock_container, tmp_path):
+    """``-v`` is accepted on env subcommands (propagates via Context to OutputService)."""
+    _, runner = registered
+    result = runner.invoke(cli, ["-v", "env", "status"], env=_env_vars(tmp_path))
+    # The status command itself doesn't produce verbose output, but exit
+    # should be 0 and the flag parsing should not reject ``-v``.
+    assert result.exit_code == 0
+
+
+def test_force_flag_accepted_but_noop_for_non_templates(registered, mock_container, tmp_path):
+    """``--force`` on env start is accepted gracefully (no-op, just passes through)."""
+    _, runner = registered
+    result = runner.invoke(cli, ["-f", "env", "start"], env=_env_vars(tmp_path))
+    assert result.exit_code == 0
+    mock_container.start.assert_called_once()

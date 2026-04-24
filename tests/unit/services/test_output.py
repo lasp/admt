@@ -160,9 +160,16 @@ def test_command_echo_silent_when_not_verbose(capsys):
     assert capsys.readouterr().out == ""
 
 
-def test_command_echo_silent_when_quiet(capsys):
+def test_command_echo_survives_quiet_when_verbose(capsys):
+    """``-v -q`` together: echo the command, suppress the subprocess output.
+
+    Per ARCHITECTURE §TTY, this combination is explicitly useful for
+    agents and scripts that want to see what admt is about to run without
+    being flooded by the subprocess's own output.
+    """
     _svc(verbose=True, quiet=True).command_echo("docker compose up -d")
-    assert capsys.readouterr().out == ""
+    captured = capsys.readouterr()
+    assert "$ docker compose up -d" in captured.out
 
 
 # ----- ANSI color handling -----

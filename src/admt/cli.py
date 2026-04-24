@@ -48,7 +48,19 @@ if TYPE_CHECKING:
     from admt.context import Context
 
 
-@click.group(cls=AliasedGroup)
+_SHELL_COMPLETION_EPILOG = """\
+Enable shell completion by sourcing the generator for your shell:
+
+\b
+  bash:  eval "$(_ADMT_COMPLETE=bash_source admt)"
+  zsh:   eval "$(_ADMT_COMPLETE=zsh_source admt)"
+  fish:  eval (env _ADMT_COMPLETE=fish_source admt)
+
+Add the appropriate line to your shell's rc file to persist.
+"""
+
+
+@click.group(cls=AliasedGroup, epilog=_SHELL_COMPLETION_EPILOG)
 @click.version_option()
 @click.option("--verbose", "-v", is_flag=True, help="Show underlying commands")
 @click.option("--quiet", "-q", is_flag=True, help="Minimal output")
