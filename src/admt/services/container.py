@@ -314,14 +314,42 @@ class ContainerService:
         if check.returncode == 0:
             return False
         baseline = self._capture_env(["env"])
-        activate = str(self._project.activate_script)
-        # env/activate runs pip install, alr build, wget, gprbuild, etc. on
-        # first activation -- legitimately minutes of work. Bypass the
-        # bounded timeout so the activation isn't killed mid-build.
-        activated = self._capture_env(["bash", "-c", f"source {activate} && env"], bounded=False)
+        activated = self._capture_activated_env()
         self._write_container_file(self._snapshot_path(), self._build_snapshot(baseline, activated))
         self._write_container_file(proxy, self._build_proxy(), executable=True)
         return True
+
+    def _capture_activated_env(self) -> dict[str, str]:
+        """Source ``env/activate`` with its output streamed live to the user.
+
+        First-run activation can take many minutes (pip installs, alr
+        builds, wget+gprbuild of the Pico runtime). Running it through the
+        ``capture_output`` path hides that progress behind a silent wall of
+        waiting. This path inherits stdio so the user sees the activate
+        script's own chatter (``Setting up...``, ``[Ada] ... [gprlib] ...``,
+        ``Done.``) as it arrives, while the final ``env`` dump is redirected
+        to a container-side file so it doesn't flood the terminal. We then
+        read the file back in a short bounded ``cat`` to do the parse.
+        """
+        project_dir = self._project_tmp_dir()
+        env_file = f"{project_dir}/env_activated"
+        activate = str(self._project.activate_script)
+        shell_cmd = f"mkdir -p {project_dir} && source {activate} && env > {env_file}"
+        self._output.info(
+            "Activating environment in container (first run can take several minutes)..."
+        )
+        result = self._docker.docker_exec(["bash", "-c", shell_cmd], merge_stderr=True)
+        if result.returncode != 0:
+            msg = f"env/activate failed in container (exit {result.returncode}); see output above."
+            raise ContainerError(msg)
+        cat = self._docker.docker_exec_captured(["cat", env_file])
+        if cat.returncode != 0:
+            msg = (
+                f"Failed to read activated environment from '{env_file}' "
+                f"(exit {cat.returncode}): {cat.stderr.strip() or '<no stderr>'}"
+            )
+            raise ContainerError(msg)
+        return self._parse_env_output(cat.stdout)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -340,18 +368,15 @@ class ContainerService:
     def _snapshot_path(self) -> str:
         return f"{self._project_tmp_dir()}/env_snapshot.sh"
 
-    def _capture_env(self, cmd: list[str], *, bounded: bool = True) -> dict[str, str]:
-        """Capture ``env`` output from the container; parse ``KEY=VALUE`` pairs.
+    def _capture_env(self, cmd: list[str]) -> dict[str, str]:
+        """Capture short ``env``-style output; parse ``KEY=VALUE`` pairs.
 
-        ``bounded=True`` uses the adapter's default timeout (for short
-        snapshots of the container's baseline environment). ``bounded=False``
-        disables the timeout -- used for sourcing ``env/activate``, where
-        first-run work can legitimately run for many minutes.
+        Uses the adapter's bounded timeout -- fine for the baseline
+        ``env`` snapshot. Long-running captures (sourcing ``env/activate``)
+        go through ``_capture_activated_env`` instead, which streams
+        output live and has no timeout.
         """
-        if bounded:
-            result = self._docker.docker_exec_captured(cmd)
-        else:
-            result = self._docker.docker_exec_captured(cmd, timeout=None)
+        result = self._docker.docker_exec_captured(cmd)
         if result.returncode != 0:
             msg = (
                 f"Failed to capture container environment (exit {result.returncode}): "

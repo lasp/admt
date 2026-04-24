@@ -206,7 +206,18 @@ class OutputService:
 
     @staticmethod
     def _write(stream: TextIO, message: str) -> None:
+        """Write ``message + newline`` and flush.
+
+        Flushing matters when admt's own messages sit next to streamed
+        subprocess output (e.g., the "Activating environment..." info
+        printed just before we hand stdio off to ``docker exec`` sourcing
+        ``env/activate``). Under block-buffered stdout (piped, redirected
+        to a file, or captured by a wrapper), Python's own writes would
+        otherwise stay buffered while the child process wrote directly to
+        the fd, producing output in the wrong order.
+        """
         stream.write(message + "\n")
+        stream.flush()
 
     @staticmethod
     def _colorize(stream: TextIO, code: str, message: str) -> str:
