@@ -46,6 +46,14 @@ _TARGET_MAP: dict[str, str] = {
 
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
 _REDO_LINE = re.compile(r"^redo(?P<spaces> +)(?P<target>\S+)\s*$")
+# Multi-word ``redo <text>`` lines -- redo's own status messages for
+# high-level phase transitions (``redo  Compiling 13 objects...``,
+# ``redo  Moving 13 objects...``). Distinguished from target progress
+# (``redo  build/foo.o``) by having two or more whitespace-separated
+# tokens after ``redo``. Normal redo target progress is always a single
+# token (a path or name without spaces); multi-token output is redo's
+# human-readable status phase.
+_REDO_STATUS_MESSAGE = re.compile(r"^redo\s+(?P<message>\S+(?:\s+\S+)+)\s*$")
 # Redo's top-level progress marker: ``redo  <target>`` with exactly two
 # spaces. Nested dependency rebuilds use four or more spaces.
 _OUTER_SPACES = 2
@@ -98,6 +106,25 @@ def rewrite_line(raw: str) -> str | None:
     return f"admt build{separator}{target}"
 
 
+def match_redo_status(raw: str) -> str | None:
+    """Return the message of a ``redo <multi-word text>`` status line, or None.
+
+    Matches lines like ``redo  Compiling 13 objects...`` where the text
+    after ``redo`` has two or more whitespace-separated tokens. Returns
+    the message (without the ``redo `` prefix); callers style it
+    separately from verb rewrites (typically gold without the bold
+    weight that verbs carry).
+
+    Returns ``None`` for single-token ``redo <target>`` lines (those go
+    through ``rewrite_line``) and for non-redo lines. ANSI escapes are
+    stripped before matching so redo's colored status lines are
+    recognized even when stdout was a TTY on redo's end.
+    """
+    clean = _ANSI_ESCAPE.sub("", raw).rstrip()
+    match = _REDO_STATUS_MESSAGE.match(clean)
+    return match.group("message") if match else None
+
+
 def rewrite_line_terse(raw: str) -> str | None:
     """Like ``rewrite_line`` but without the leading ``admt `` prefix.
 
@@ -114,3 +141,36 @@ def rewrite_line_terse(raw: str) -> str | None:
     """
     result = rewrite_line(raw)
     return None if result is None else result.removeprefix("admt ")
+
+
+# Known admt verbs for ``split_verb`` -- both the full ``admt <x>`` form
+# (what's in _TARGET_MAP) and the terse form with ``admt `` stripped
+# (what streaming emits). Sorted longest-first so ``admt test --all``
+# matches before ``admt test`` and ``test --all`` before ``test``.
+_VERB_CHOICES: tuple[str, ...] = tuple(
+    sorted(
+        {*_TARGET_MAP.values(), *(v.removeprefix("admt ") for v in _TARGET_MAP.values())},
+        key=len,
+        reverse=True,
+    )
+)
+
+
+def split_verb(line: str) -> tuple[str, str]:
+    """Split ``line`` at the admt verb boundary; return ``(verb, rest)``.
+
+    Matches the longest known verb (full or terse) at the head of the
+    line; the rest is whatever follows, inclusive of the separator
+    whitespace. Used by callers that tint the verb in admt's signature
+    color while leaving the target and any trailing tool output in the
+    terminal's default color.
+
+    Pass-through lines (compiler warnings etc.) that don't start with a
+    known verb return ``("", line)`` so callers can leave them as-is.
+    """
+    for verb in _VERB_CHOICES:
+        if line == verb:
+            return verb, ""
+        if line.startswith(verb + " "):
+            return verb, line[len(verb) :]
+    return "", line

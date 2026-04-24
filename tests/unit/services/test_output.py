@@ -175,12 +175,17 @@ def test_command_echo_survives_quiet_when_verbose(capsys):
 # ----- ANSI color handling -----
 
 
-def test_success_emits_green_when_stdout_is_tty(capsys):
+def test_success_emits_gold_non_bold_when_stdout_is_tty(capsys):
+    # Success announcements share admt's non-bold gold tier with closing
+    # ``done.`` lines and redo-relayed status phases -- admt's voice, no
+    # emphatic weight.
     with patch("sys.stdout.isatty", return_value=True), patch.dict(os.environ, {}, clear=False):
         os.environ.pop("NO_COLOR", None)
         _svc().success("all good")
     captured = capsys.readouterr()
-    assert "\033[32m" in captured.out
+    assert "\033[38;2;207;184;124m" in captured.out
+    # Bold SGR is NOT prepended on success lines.
+    assert "\033[1m" not in captured.out
     assert "\033[0m" in captured.out
 
 
@@ -220,6 +225,50 @@ def test_info_is_never_colored(capsys):
         _svc().info("plain info")
     captured = capsys.readouterr()
     assert "\033[" not in captured.out
+
+
+# ----- admt signature color -----
+
+
+def test_admt_wraps_in_bold_gold_when_stdout_is_color_tty():
+    # Bold (\033[1m) + 24-bit truecolor RGB 207/184/124 (#CFB87C) =
+    # admt's signature styling. Emitted as two separate SGR sequences
+    # so the bold attribute survives on terminals that strip it from
+    # combined ``1;38;2;...`` codes.
+    with patch("sys.stdout.isatty", return_value=True), patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("NO_COLOR", None)
+        wrapped = _svc().admt("building...")
+    assert wrapped.startswith("\033[1m\033[38;2;207;184;124m")
+    assert wrapped.endswith("\033[0m")
+    assert "building..." in wrapped
+
+
+def test_admt_returns_plain_when_stdout_is_not_tty():
+    # capsys's capture is not a TTY -- plain text.
+    assert _svc().admt("building...") == "building..."
+
+
+def test_admt_returns_plain_when_no_color_env_set(monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    with patch("sys.stdout.isatty", return_value=True):
+        assert _svc().admt("building...") == "building..."
+
+
+def test_admt_bold_false_wraps_in_gold_without_bold():
+    # bold=False is for admt-relayed tool messages (e.g. redo status
+    # phases) -- gold only, no bold weight.
+    with patch("sys.stdout.isatty", return_value=True), patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("NO_COLOR", None)
+        wrapped = _svc().admt("Compiling 13 objects...", bold=False)
+    assert wrapped.startswith("\033[38;2;207;184;124m")
+    # Bold SGR is NOT prepended.
+    assert not wrapped.startswith("\033[1m")
+    assert wrapped.endswith("\033[0m")
+    assert "Compiling 13 objects..." in wrapped
+
+
+def test_admt_bold_false_returns_plain_when_no_tty():
+    assert _svc().admt("Compiling 13 objects...", bold=False) == "Compiling 13 objects..."
 
 
 # ----- emit_captured -----

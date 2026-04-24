@@ -13,12 +13,50 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, ClassVar
 
 from admt.adapters.redo import RedoAdapter
-from admt.adapters.redo_output import rewrite_line_terse
+from admt.adapters.redo_output import match_redo_status, rewrite_line_terse, split_verb
 from admt.context import Result
 from admt.exceptions import ContainerError
 
 if TYPE_CHECKING:
+    from admt.adapters.docker import LineTransform
     from admt.context import Context
+    from admt.services.output import OutputService
+
+
+def _colored_streaming_transform(output: OutputService) -> LineTransform:
+    """Build a streaming transform that tints admt-originated lines.
+
+    Three kinds of line get three different treatments:
+
+    1. Multi-word redo status (``redo  Compiling 13 objects...``) --
+       admt-relayed tool status. The ``redo `` prefix is dropped and the
+       message is tinted gold *without* bold, so it reads as an
+       intermediate-weight marker between bold verbs and raw tool
+       output.
+    2. Single-token redo target progress (``redo    build/foo.adb``) --
+       rewritten to ``build build/foo.adb`` (or the mapped verb), with
+       the verb head in bold + gold via ``output.admt`` and the target
+       tail left in the terminal's default color.
+    3. Pass-through (compiler output, warnings, anything the rewrite
+       didn't touch) -- forwarded verbatim so the underlying tool's
+       own ANSI and colors survive.
+    """
+
+    def transform(raw: str) -> str | None:
+        status = match_redo_status(raw)
+        if status is not None:
+            return output.admt(status, bold=False)
+        result = rewrite_line_terse(raw)
+        if result is None:
+            return None
+        if result.rstrip() == raw.rstrip():
+            return result
+        verb, rest = split_verb(result)
+        # Rewrites always produce one of the known verbs; ``split_verb``
+        # returns the tail as ``rest``. Tint the verb, keep the rest plain.
+        return output.admt(verb) + rest
+
+    return transform
 
 
 class Command(ABC):
@@ -92,10 +130,14 @@ class ContainerPassthroughCommand(Command):
         In quiet mode the transform is omitted; captured output stays raw
         and is only shown on failure via ``emit_captured``.
 
-        ``status_verb`` frames the streaming output on success: ``<verb>...``
-        goes out before exec starts, then ``done.`` after exec returns 0.
-        On failure the closing line is suppressed -- the adapter's
-        ``Failed (exit N): <cmd>`` diagnostic is the signal there.
+        ``status_verb`` frames the streaming output on success:
+        ``<verb>...`` opens the stream in bold + gold (admt's emphatic
+        framing) and ``done.`` closes it on exit 0 in gold-only --
+        grouping it with the non-bold announcement tier (``success()``
+        messages, redo-relayed status phases) since a closing marker
+        isn't as loud as an opening one. On failure the closing line is
+        suppressed -- the adapter's ``Failed (exit N): <cmd>``
+        diagnostic is the signal there.
         """
         if context.container_service is None:
             msg = "ContainerService was not wired for this command (CLI bug)."
@@ -103,15 +145,15 @@ class ContainerPassthroughCommand(Command):
         container_path = context.resolve_container_path()
         target = self.resolve_target(context)
         if self.status_verb:
-            context.output.info(f"{self.status_verb}...")
+            context.output.info(context.output.admt(f"{self.status_verb}..."))
         redo_cmd = RedoAdapter.build_command(target, cwd=container_path, debug=context.debug)
         exit_code = context.container_service.exec(
             redo_cmd,
             interactive=False,
             merge_stderr=True,
             capture_output=context.quiet,
-            line_transform=None if context.quiet else rewrite_line_terse,
+            line_transform=None if context.quiet else _colored_streaming_transform(context.output),
         )
         if exit_code == 0 and self.status_verb:
-            context.output.info("done.")
+            context.output.info(context.output.admt("done.", bold=False))
         return Result(exit_code=exit_code)

@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from admt.adapters.redo_output import rewrite_line, rewrite_line_terse
+from admt.adapters.redo_output import (
+    match_redo_status,
+    rewrite_line,
+    rewrite_line_terse,
+    split_verb,
+)
 
 
 def test_rewrite_line_drops_top_level_redo_header():
@@ -88,3 +93,75 @@ def test_rewrite_line_terse_passes_through_non_redo_lines_unchanged():
     # Pass-through lines don't carry the ``admt `` prefix, so removeprefix is a no-op.
     original = "gnatmake: warning: something\n"
     assert rewrite_line_terse(original) == original
+
+
+# ----- split_verb: identify the admt verb head for selective coloring -----
+
+
+def test_split_verb_separates_full_verb_and_target():
+    assert split_verb("admt build foo.adb") == ("admt build", " foo.adb")
+
+
+def test_split_verb_separates_terse_verb_and_target():
+    assert split_verb("build foo.adb") == ("build", " foo.adb")
+
+
+def test_split_verb_preserves_depth_separator_in_rest():
+    # Depth-encoded extra spaces between verb and target belong to ``rest``
+    # so only the verb gets tinted.
+    assert split_verb("build   types/foo.html") == ("build", "   types/foo.html")
+
+
+def test_split_verb_matches_mapped_verb_with_flag_as_single_unit():
+    # ``test --all`` is one verb; there's no target after it.
+    assert split_verb("test --all") == ("test --all", "")
+    assert split_verb("admt test --all") == ("admt test --all", "")
+
+
+def test_split_verb_matches_bare_verb_when_no_target():
+    assert split_verb("admt build") == ("admt build", "")
+    assert split_verb("build") == ("build", "")
+
+
+def test_split_verb_returns_empty_verb_for_non_admt_lines():
+    # Pass-through lines (compiler output, notes) carry no admt verb.
+    assert split_verb("gnatmake: warning: foo") == ("", "gnatmake: warning: foo")
+
+
+def test_split_verb_prefers_longest_verb_match():
+    # ``test --all`` must win over ``test`` for lines like ``test --all foo``.
+    assert split_verb("test --all foo") == ("test --all", " foo")
+
+
+# ----- match_redo_status: recognize multi-word ``redo <status>`` lines -----
+
+
+def test_match_redo_status_returns_message_for_multi_word_redo():
+    assert match_redo_status("redo  Compiling 13 objects...") == "Compiling 13 objects..."
+    assert match_redo_status("redo  Moving 13 objects...") == "Moving 13 objects..."
+
+
+def test_match_redo_status_handles_trailing_newline():
+    # Streaming input arrives with trailing newlines.
+    assert match_redo_status("redo  Compiling 13 objects...\n") == "Compiling 13 objects..."
+
+
+def test_match_redo_status_returns_none_for_single_token_redo():
+    # Single-token lines are target progress, handled by rewrite_line, not status.
+    assert match_redo_status("redo all") is None
+    assert match_redo_status("redo    build/foo.adb") is None
+    assert match_redo_status("redo  what") is None
+
+
+def test_match_redo_status_returns_none_for_non_redo_lines():
+    assert match_redo_status("gnatmake: warning: foo") is None
+    assert match_redo_status("Compiling 13 objects...") is None
+    assert match_redo_status("") is None
+
+
+def test_match_redo_status_strips_ansi_before_matching():
+    # Redo colors its status lines (green on a TTY); strip before matching.
+    assert (
+        match_redo_status("\x1b[32mredo\x1b[0m  Compiling 13 objects...")
+        == "Compiling 13 objects..."
+    )
