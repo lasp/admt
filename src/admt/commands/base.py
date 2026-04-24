@@ -20,11 +20,15 @@ class Command(ABC):
 
     Every concrete subclass must declare ``name``, ``help``, and
     ``requires_project`` as class attributes. Contract tests enforce this.
+    ``requires_container`` defaults to ``False``; commands that need a
+    live ``ContainerService`` on ``context`` set it to ``True`` so the CLI
+    adapter can wire one before ``execute`` runs.
     """
 
     name: ClassVar[str]
     help: ClassVar[str]
     requires_project: ClassVar[bool]
+    requires_container: ClassVar[bool] = False
 
     @abstractmethod
     def execute(self, context: Context) -> Result:

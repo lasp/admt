@@ -1,10 +1,10 @@
 """Context and Result dataclasses passed through the command pipeline.
 
-Phase 1 scope: the global-flag/positional-arg fields plus the two services
-that are *always* available (``config_service``, ``output``). The lazily
-initialized services (``container_service``, ``path_mapper``) and
-``resolve_container_path()`` land in Phase 2 when the container service
-exists.
+Required fields -- ``config_service`` and ``output`` -- are always set by the
+CLI adapter. ``container_service`` is lazily populated (only for commands
+that opt in via ``requires_container``), so it is Optional; commands that
+need it should have been wired by ``cli._run_command`` before ``execute``
+runs. The path-mapper field follows the same lazy pattern in Phase 3.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from admt.services.config import ConfigService
+    from admt.services.container import ContainerService
     from admt.services.output import OutputService
 
 
@@ -26,6 +27,7 @@ class Context:
     Attributes:
         config_service: The active project registry -- always present.
         output: User-facing output + prompt service -- always present.
+        container_service: Lazily wired for commands with ``requires_container``.
         verbose: Echo underlying docker/redo commands before executing them.
         quiet: Suppress output on success; only errors are printed.
         debug: Implies ``verbose``; prepends ``DEBUG=1`` to redo commands.
@@ -39,6 +41,7 @@ class Context:
 
     config_service: ConfigService
     output: OutputService
+    container_service: ContainerService | None = None
     verbose: bool = False
     quiet: bool = False
     debug: bool = False

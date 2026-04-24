@@ -13,8 +13,23 @@ from typing import TYPE_CHECKING
 
 import click
 
-from admt.bootstrap import build_context
-from admt.commands.env import EnvInitCommand, EnvUseCommand
+from admt.bootstrap import build_container_service, build_context
+from admt.commands.env import (
+    EnvBuildCommand,
+    EnvExecCommand,
+    EnvInitCommand,
+    EnvListCommand,
+    EnvLoginCommand,
+    EnvPullCommand,
+    EnvPushCommand,
+    EnvRefreshCommand,
+    EnvRestartCommand,
+    EnvRmCommand,
+    EnvStartCommand,
+    EnvStatusCommand,
+    EnvStopCommand,
+    EnvUseCommand,
+)
 from admt.exceptions import AdmtError
 
 if TYPE_CHECKING:
@@ -94,9 +109,100 @@ def env_use(admt_ctx: Context, project_name: str) -> None:
     _run_command(EnvUseCommand(project_name), admt_ctx)
 
 
+@env_group.command(name="start")
+@click.pass_obj
+def env_start(admt_ctx: Context) -> None:
+    """Start the project container."""
+    _run_command(EnvStartCommand(), admt_ctx)
+
+
+@env_group.command(name="stop")
+@click.pass_obj
+def env_stop(admt_ctx: Context) -> None:
+    """Stop the project container."""
+    _run_command(EnvStopCommand(), admt_ctx)
+
+
+@env_group.command(name="restart")
+@click.pass_obj
+def env_restart(admt_ctx: Context) -> None:
+    """Restart the project container (stop + start)."""
+    _run_command(EnvRestartCommand(), admt_ctx)
+
+
+@env_group.command(name="login")
+@click.pass_obj
+def env_login(admt_ctx: Context) -> None:
+    """Open an interactive shell in the container."""
+    _run_command(EnvLoginCommand(), admt_ctx)
+
+
+@env_group.command(name="status")
+@click.pass_obj
+def env_status(admt_ctx: Context) -> None:
+    """Show container status."""
+    _run_command(EnvStatusCommand(), admt_ctx)
+
+
+@env_group.command(name="build")
+@click.pass_obj
+def env_build(admt_ctx: Context) -> None:
+    """Build the Docker image."""
+    _run_command(EnvBuildCommand(), admt_ctx)
+
+
+@env_group.command(name="push")
+@click.pass_obj
+def env_push(admt_ctx: Context) -> None:
+    """Push the Docker image."""
+    _run_command(EnvPushCommand(), admt_ctx)
+
+
+@env_group.command(name="pull")
+@click.pass_obj
+def env_pull(admt_ctx: Context) -> None:
+    """Pull the Docker image."""
+    _run_command(EnvPullCommand(), admt_ctx)
+
+
+@env_group.command(name="exec")
+@click.argument("command", required=True)
+@click.pass_obj
+def env_exec(admt_ctx: Context, command: str) -> None:
+    """Run COMMAND inside the container."""
+    _run_command(EnvExecCommand(command), admt_ctx)
+
+
+@env_group.command(name="refresh")
+@click.pass_obj
+def env_refresh(admt_ctx: Context) -> None:
+    """Re-run env/activate and rebuild the admt env snapshot."""
+    _run_command(EnvRefreshCommand(), admt_ctx)
+
+
+@env_group.command(name="rm")
+@click.option("--volumes", is_flag=True, help="Also remove volumes")
+@click.option("--image", is_flag=True, help="Also remove the Docker image")
+@click.option("--remove-all", is_flag=True, help="Remove container + volumes + image")
+@click.pass_obj
+def env_rm(admt_ctx: Context, *, volumes: bool, image: bool, remove_all: bool) -> None:
+    """Remove the project container."""
+    cmd = EnvRmCommand(remove_volumes=volumes, remove_image=image, remove_all=remove_all)
+    _run_command(cmd, admt_ctx)
+
+
+@env_group.command(name="list")
+@click.pass_obj
+def env_list(admt_ctx: Context) -> None:
+    """List registered projects."""
+    _run_command(EnvListCommand(), admt_ctx)
+
+
 def _run_command(cmd: Command, admt_ctx: Context) -> None:
-    """Execute a Command and translate errors to Click exits."""
+    """Execute a Command, wiring ContainerService on demand, converting errors to exits."""
     try:
+        if cmd.requires_container:
+            admt_ctx.container_service = build_container_service(admt_ctx)
         result = cmd.execute(admt_ctx)
     except AdmtError as exc:
         admt_ctx.output.error(str(exc))

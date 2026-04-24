@@ -1,13 +1,29 @@
-"""Unit tests for EnvInitCommand and EnvUseCommand (services mocked)."""
+"""Unit tests for env subcommands -- services mocked."""
 
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from admt.commands.env import EnvInitCommand, EnvUseCommand
-from admt.exceptions import ArgumentError, ConfigError
+from admt.commands.env import (
+    EnvBuildCommand,
+    EnvExecCommand,
+    EnvInitCommand,
+    EnvListCommand,
+    EnvLoginCommand,
+    EnvPullCommand,
+    EnvPushCommand,
+    EnvRefreshCommand,
+    EnvRestartCommand,
+    EnvRmCommand,
+    EnvStartCommand,
+    EnvStatusCommand,
+    EnvStopCommand,
+    EnvUseCommand,
+)
+from admt.exceptions import ArgumentError, ConfigError, ContainerError
 from admt.services.config import ProjectConfig
+from admt.services.container import ContainerService, ContainerStatus
 
 
 def _project_stub(name: str = "myproj", mounts: int = 2) -> ProjectConfig:
@@ -168,3 +184,185 @@ def test_mock_is_used(make_context):
     # Sanity check that make_context's config_service responds to mock methods.
     ctx = make_context()
     assert isinstance(ctx.config_service, MagicMock)
+
+
+# ----- Container-backed commands (EnvStart/Stop/Restart/Login/Status/...) -----
+
+
+def _ctx_with_container(make_context, **overrides):
+    container = MagicMock(spec=ContainerService)
+    ctx = make_context(container_service=container, **overrides)
+    return ctx, container
+
+
+def test_env_start_delegates(make_context):
+    ctx, container = _ctx_with_container(make_context)
+    result = EnvStartCommand().execute(ctx)
+    container.start.assert_called_once()
+    assert result.exit_code == 0
+
+
+def test_env_stop_delegates(make_context):
+    ctx, container = _ctx_with_container(make_context)
+    result = EnvStopCommand().execute(ctx)
+    container.stop.assert_called_once()
+    assert result.exit_code == 0
+
+
+def test_env_restart_delegates(make_context):
+    ctx, container = _ctx_with_container(make_context)
+    EnvRestartCommand().execute(ctx)
+    container.restart.assert_called_once()
+
+
+def test_env_login_propagates_exit_code(make_context):
+    sentinel = 42
+    ctx, container = _ctx_with_container(make_context)
+    container.login.return_value = sentinel
+    result = EnvLoginCommand().execute(ctx)
+    assert result.exit_code == sentinel
+
+
+def test_env_status_prints_project_and_state(make_context):
+    ctx, container = _ctx_with_container(make_context)
+    ctx.config_service.get_active_project.return_value = _project_stub("demo")
+    container.status.return_value = ContainerStatus.RUNNING
+    EnvStatusCommand().execute(ctx)
+    info_lines = [c.args[0] for c in ctx.output.info.call_args_list]
+    assert any("Project: demo" in line for line in info_lines)
+    assert any("Status: running" in line for line in info_lines)
+
+
+def test_env_build_push_pull_delegate(make_context):
+    for cmd_cls, method in [
+        (EnvBuildCommand, "build_image"),
+        (EnvPushCommand, "push_image"),
+        (EnvPullCommand, "pull_image"),
+    ]:
+        ctx, container = _ctx_with_container(make_context)
+        cmd_cls().execute(ctx)
+        getattr(container, method).assert_called_once()
+
+
+def test_env_exec_uses_noninteractive_when_flag_set(make_context):
+    ctx, container = _ctx_with_container(make_context, noninteractive=True)
+    container.exec.return_value = 0
+    EnvExecCommand("echo hi").execute(ctx)
+    assert container.exec.call_args.kwargs["interactive"] is False
+
+
+def test_env_exec_respects_stdin_tty_detection(make_context):
+    sentinel = 7
+    ctx, container = _ctx_with_container(make_context, noninteractive=False)
+    container.exec.return_value = sentinel
+    with patch("admt.commands.env.os.isatty", return_value=True):
+        result = EnvExecCommand("bash").execute(ctx)
+    assert container.exec.call_args.kwargs["interactive"] is True
+    assert result.exit_code == sentinel
+
+
+def test_env_refresh_delegates(make_context):
+    ctx, container = _ctx_with_container(make_context)
+    EnvRefreshCommand().execute(ctx)
+    container.refresh.assert_called_once()
+
+
+def test_env_rm_aborts_when_prompt_declines(make_context):
+    ctx, container = _ctx_with_container(make_context)
+    ctx.output.prompt.return_value = False
+    ctx.config_service.get_active_project.return_value = _project_stub()
+    result = EnvRmCommand().execute(ctx)
+    container.rm.assert_not_called()
+    assert result.exit_code == 0
+
+
+def test_env_rm_delegates_when_confirmed(make_context):
+    ctx, container = _ctx_with_container(make_context)
+    ctx.output.prompt.return_value = True
+    ctx.config_service.get_active_project.return_value = _project_stub()
+    EnvRmCommand(remove_volumes=True).execute(ctx)
+    container.rm.assert_called_once_with(remove_volumes=True, remove_image=False, remove_all=False)
+
+
+def test_env_rm_remove_all_is_passed_through(make_context):
+    ctx, container = _ctx_with_container(make_context)
+    ctx.output.prompt.return_value = True
+    ctx.config_service.get_active_project.return_value = _project_stub()
+    EnvRmCommand(remove_all=True).execute(ctx)
+    container.rm.assert_called_once_with(remove_volumes=False, remove_image=False, remove_all=True)
+
+
+def test_env_rm_describes_scope_in_prompt(make_context):
+    ctx, _container = _ctx_with_container(make_context)
+    ctx.output.prompt.return_value = False
+    ctx.config_service.get_active_project.return_value = _project_stub()
+    EnvRmCommand(remove_volumes=True, remove_image=True).execute(ctx)
+    prompt_message = ctx.output.prompt.call_args.args[0]
+    assert "volumes" in prompt_message
+    assert "image" in prompt_message
+
+
+def test_env_rm_remove_all_prompt_uses_combined_label(make_context):
+    ctx, _ = _ctx_with_container(make_context)
+    ctx.output.prompt.return_value = False
+    ctx.config_service.get_active_project.return_value = _project_stub()
+    EnvRmCommand(remove_all=True).execute(ctx)
+    prompt_message = ctx.output.prompt.call_args.args[0]
+    assert "container + volumes + image" in prompt_message
+
+
+def test_container_commands_missing_container_service_raises(make_context):
+    ctx = make_context()  # no container_service
+    with pytest.raises(ContainerError, match="CLI bug"):
+        EnvStartCommand().execute(ctx)
+
+
+# ----- EnvListCommand -----
+
+
+def test_env_list_empty(make_context):
+    ctx = make_context()
+    ctx.config_service.list_projects.return_value = {}
+    EnvListCommand().execute(ctx)
+    messages = [c.args[0] for c in ctx.output.info.call_args_list]
+    assert any("No projects registered" in m for m in messages)
+
+
+def test_env_list_renders_projects_with_active_marker(make_context):
+    ctx = make_context()
+    projects = {"alpha": _project_stub("alpha"), "beta": _project_stub("beta")}
+    ctx.config_service.list_projects.return_value = projects
+    ctx.config_service.load.return_value.active_project = "beta"
+    EnvListCommand().execute(ctx)
+    lines = [c.args[0] for c in ctx.output.info.call_args_list]
+    active_line = next(line for line in lines if "beta" in line)
+    inactive_line = next(line for line in lines if "alpha" in line)
+    assert active_line.startswith("*")
+    assert inactive_line.startswith(" ")
+
+
+# ----- Command-class metadata contract -----
+
+
+@pytest.mark.parametrize(
+    ("cls", "expected_name", "expected_requires_container"),
+    [
+        (EnvStartCommand, "env start", True),
+        (EnvStopCommand, "env stop", True),
+        (EnvRestartCommand, "env restart", True),
+        (EnvLoginCommand, "env login", True),
+        (EnvStatusCommand, "env status", True),
+        (EnvBuildCommand, "env build", True),
+        (EnvPushCommand, "env push", True),
+        (EnvPullCommand, "env pull", True),
+        (EnvRefreshCommand, "env refresh", True),
+        (EnvRmCommand, "env rm", True),
+        (EnvListCommand, "env list", False),
+    ],
+)
+def test_phase2_env_commands_declare_metadata(cls, expected_name, expected_requires_container):
+    assert cls.name == expected_name
+    assert cls.help
+    assert cls.requires_container is expected_requires_container
+    if expected_requires_container:
+        assert cls.requires_project is True

@@ -1,13 +1,16 @@
-"""Output service -- user-facing messages, prompts, and choices.
+"""Output service -- user-facing messages, prompts, choices, color, command echo.
 
-Phase 1 scope: ``info``/``success`` route to stdout (suppressed by ``--quiet``),
-``warning``/``error`` route to stderr, and ``prompt``/``choose`` handle the
-``--yes`` and ``ADMT_NONINTERACTIVE`` semantics per ARCHITECTURE.md. Phase 2
-will layer ``command_echo`` and ANSI color handling on top of this surface.
+``info``/``success`` route to stdout (suppressed by ``--quiet``),
+``warning``/``error`` route to stderr, ``prompt``/``choose`` handle the
+``--yes`` and ``ADMT_NONINTERACTIVE`` semantics, ``command_echo`` emits
+``$ <cmd>`` lines when verbose, and success/warning/error wrap their
+messages in ANSI color codes when the target stream is a TTY and
+``NO_COLOR`` is unset (per https://no-color.org).
 """
 
 from __future__ import annotations
 
+import os
 import sys
 from typing import TYPE_CHECKING
 
@@ -15,6 +18,13 @@ from admt.exceptions import ArgumentError
 
 if TYPE_CHECKING:
     from typing import TextIO
+
+
+_ANSI_RESET = "\033[0m"
+_ANSI_GREEN = "\033[32m"
+_ANSI_YELLOW = "\033[33m"
+_ANSI_RED = "\033[31m"
+_ANSI_DIM = "\033[2m"
 
 
 class OutputService:
@@ -61,16 +71,24 @@ class OutputService:
         self._write(sys.stdout, message)
 
     def success(self, message: str) -> None:
-        """Print a success message to stdout (suppressed when ``--quiet``)."""
-        self.info(message)
+        """Print a green success message to stdout (suppressed when ``--quiet``)."""
+        if self._quiet:
+            return
+        self._write(sys.stdout, self._colorize(sys.stdout, _ANSI_GREEN, message))
 
     def warning(self, message: str) -> None:
-        """Print a warning message to stderr."""
-        self._write(sys.stderr, message)
+        """Print a yellow warning message to stderr."""
+        self._write(sys.stderr, self._colorize(sys.stderr, _ANSI_YELLOW, message))
 
     def error(self, message: str) -> None:
-        """Print an error message to stderr."""
-        self._write(sys.stderr, message)
+        """Print a red error message to stderr."""
+        self._write(sys.stderr, self._colorize(sys.stderr, _ANSI_RED, message))
+
+    def command_echo(self, command: str) -> None:
+        """Print ``$ <command>`` to stdout when verbose mode is active."""
+        if not self._verbose or self._quiet:
+            return
+        self._write(sys.stdout, self._colorize(sys.stdout, _ANSI_DIM, f"$ {command}"))
 
     def prompt(self, message: str, *, default: bool | None = True) -> bool:
         """Ask a yes/no question; return the answer.
@@ -131,3 +149,12 @@ class OutputService:
     @staticmethod
     def _write(stream: TextIO, message: str) -> None:
         stream.write(message + "\n")
+
+    @staticmethod
+    def _colorize(stream: TextIO, code: str, message: str) -> str:
+        """Wrap ``message`` in ANSI ``code``/reset when ``stream`` is a color-friendly TTY."""
+        if os.environ.get("NO_COLOR"):
+            return message
+        if not stream.isatty():
+            return message
+        return f"{code}{message}{_ANSI_RESET}"
