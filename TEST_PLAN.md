@@ -682,6 +682,7 @@ exclude_lines = [
     "pragma: no cover",
     "if __name__ == .__main__.",
     "raise NotImplementedError",
+    "if TYPE_CHECKING:",
 ]
 ```
 
