@@ -29,6 +29,7 @@ def adapter(compose_path):
     return DockerAdapter(
         compose_file=compose_path,
         service_name="svc",
+        container_name="svc_container",
         compose_cmd=["docker", "compose"],
     )
 
@@ -121,102 +122,266 @@ def test_compose_build_push_pull(adapter):
         _assert_streamed(adapter, expected, popen)
 
 
-def test_compose_exec_non_interactive_uses_t_flag(adapter):
-    with patch("subprocess.Popen", return_value=_make_popen_mock()) as popen:
-        adapter.compose_exec(["echo", "hi"])
-    _assert_streamed(adapter, ["exec", "-u", "user", "-T", "svc", "echo", "hi"], popen)
-
-
-def test_compose_exec_interactive_uses_it(adapter):
-    with patch("subprocess.Popen", return_value=_make_popen_mock()) as popen:
-        adapter.compose_exec(["bash"], interactive=True)
-    _assert_streamed(adapter, ["exec", "-u", "user", "-it", "svc", "bash"], popen)
-
-
-def test_compose_exec_custom_user(adapter):
-    with patch("subprocess.Popen", return_value=_make_popen_mock()) as popen:
-        adapter.compose_exec(["whoami"], user="root")
-    _assert_streamed(adapter, ["exec", "-u", "root", "-T", "svc", "whoami"], popen)
-
-
-def test_compose_exec_merge_stderr_passes_stdout_redirect(adapter):
-    with patch("subprocess.Popen", return_value=_make_popen_mock()) as popen:
-        adapter.compose_exec(["redo", "all"], merge_stderr=True)
-    assert popen.call_args.kwargs["stderr"] is subprocess.STDOUT
-
-
-def test_compose_exec_without_merge_inherits_stderr(adapter):
-    with patch("subprocess.Popen", return_value=_make_popen_mock()) as popen:
-        adapter.compose_exec(["bash", "-c", "true"])
-    # Default stderr is None (inherit parent).
-    assert popen.call_args.kwargs.get("stderr") is None
-
-
-def test_compose_exec_capture_output_uses_subprocess_run(adapter):
-    with patch("subprocess.run", return_value=_make_completed(stdout="ok", stderr="warn")) as run:
-        result = adapter.compose_exec(["redo", "all"], capture_output=True)
-    assert result.returncode == 0
-    assert result.stdout == "ok"
-    assert result.stderr == "warn"
-    # capture_output has no timeout (user-bounded build).
-    assert "timeout" not in run.call_args.kwargs or run.call_args.kwargs["timeout"] is None
-    assert run.call_args.kwargs["capture_output"] is True
-
-
 def test_streaming_forwards_return_code(adapter):
     with patch("subprocess.Popen", return_value=_make_popen_mock(returncode=SENTINEL_EXIT)):
         result = adapter.compose_up()
     assert result.returncode == SENTINEL_EXIT
 
 
-# ----- captured methods -----
+# ----- docker_exec family (bypasses compose, targets container by name) -----
 
 
-def test_compose_exec_captured_uses_subprocess_run(adapter):
+def test_docker_exec_non_interactive_uses_i_flag(adapter):
+    with patch("subprocess.Popen", return_value=_make_popen_mock()) as popen:
+        adapter.docker_exec(["echo", "hi"])
+    assert popen.call_args.args[0] == [
+        "docker",
+        "exec",
+        "-u",
+        "user",
+        "-i",
+        "svc_container",
+        "echo",
+        "hi",
+    ]
+
+
+def test_docker_exec_interactive_uses_it(adapter):
+    with patch("subprocess.Popen", return_value=_make_popen_mock()) as popen:
+        adapter.docker_exec(["bash"], interactive=True)
+    assert popen.call_args.args[0] == [
+        "docker",
+        "exec",
+        "-u",
+        "user",
+        "-it",
+        "svc_container",
+        "bash",
+    ]
+
+
+def test_docker_exec_custom_user(adapter):
+    with patch("subprocess.Popen", return_value=_make_popen_mock()) as popen:
+        adapter.docker_exec(["whoami"], user="root")
+    # User flag changes; "-i" for non-interactive stays.
+    assert popen.call_args.args[0][:6] == [
+        "docker",
+        "exec",
+        "-u",
+        "root",
+        "-i",
+        "svc_container",
+    ]
+
+
+def test_docker_exec_merge_stderr_passes_stdout_redirect(adapter):
+    with patch("subprocess.Popen", return_value=_make_popen_mock()) as popen:
+        adapter.docker_exec(["redo", "all"], merge_stderr=True)
+    assert popen.call_args.kwargs["stderr"] is subprocess.STDOUT
+
+
+def test_docker_exec_without_merge_inherits_stderr(adapter):
+    with patch("subprocess.Popen", return_value=_make_popen_mock()) as popen:
+        adapter.docker_exec(["bash", "-c", "true"])
+    assert popen.call_args.kwargs.get("stderr") is None
+
+
+def test_docker_exec_capture_output_uses_subprocess_run(adapter):
+    with patch("subprocess.run", return_value=_make_completed(stdout="ok", stderr="warn")) as run:
+        result = adapter.docker_exec(["redo", "all"], capture_output=True)
+    assert result.returncode == 0
+    assert result.stdout == "ok"
+    assert result.stderr == "warn"
+    # capture_output has no timeout (user-bounded build).
+    assert "timeout" not in run.call_args.kwargs or run.call_args.kwargs["timeout"] is None
+    # When ``merge_stderr`` is False (default), stdout and stderr are piped
+    # separately via explicit PIPE args (not ``capture_output=True`` shorthand,
+    # which would prevent honoring ``merge_stderr=True`` on another call).
+    assert run.call_args.kwargs["stdout"] is subprocess.PIPE
+    assert run.call_args.kwargs["stderr"] is subprocess.PIPE
+
+
+def test_docker_exec_capture_with_merge_stderr_redirects_to_stdout(adapter):
+    """Regression: ``capture_output=True`` + ``merge_stderr=True`` must plumb
+    stderr to STDOUT at the subprocess level.
+
+    Without this, redo's output (which redo writes to stderr) ends up in
+    ``result.stderr`` and a caller that inspects only ``result.stdout`` --
+    like ``WhatCommand._transform`` -- sees nothing and emits nothing.
+    """
+    with patch(
+        "subprocess.run",
+        return_value=_make_completed(stdout="merged output", stderr=""),
+    ) as run:
+        result = adapter.docker_exec(["redo", "what"], capture_output=True, merge_stderr=True)
+    # subprocess.run was invoked with stderr=STDOUT so the child's stderr
+    # stream folded into stdout before capture.
+    assert run.call_args.kwargs["stderr"] is subprocess.STDOUT
+    assert run.call_args.kwargs["stdout"] is subprocess.PIPE
+    # ``capture_output=True`` shorthand is NOT used (it would force
+    # stderr=PIPE and drop the redirect).
+    assert run.call_args.kwargs.get("capture_output") is not True
+    # The merged content lands on result.stdout.
+    assert result.stdout == "merged output"
+
+
+# ----- docker_exec streaming with line_transform -----
+
+
+def _popen_stub_with_stdout(lines, returncode=0):
+    """Popen stand-in whose ``stdout`` iterates the given lines."""
+    stub = _make_popen_mock(returncode=returncode)
+    stub.stdout = iter(lines)
+    return stub
+
+
+def test_docker_exec_line_transform_rewrites_each_stdout_line(adapter, capsys):
+    """Each stdout line is fed through the transform before reaching the user."""
+    captured = _popen_stub_with_stdout(["redo  all\n", "redo    build/x.adb\n"])
+
+    def transform(line):
+        return f"TX:{line.rstrip()}"
+
+    with patch("subprocess.Popen", return_value=captured) as popen:
+        result = adapter.docker_exec(["redo", "all"], line_transform=transform, merge_stderr=True)
+
+    out = capsys.readouterr().out
+    assert out == "TX:redo  all\nTX:redo    build/x.adb\n"
+    assert result.returncode == 0
+    # stdout is piped so we can intercept; stderr merges so redo's human
+    # output reaches the transform.
+    assert popen.call_args.kwargs["stdout"] is subprocess.PIPE
+    assert popen.call_args.kwargs["stderr"] is subprocess.STDOUT
+
+
+def test_docker_exec_line_transform_drops_none_returns(adapter, capsys):
+    """When the transform returns None, the line is skipped."""
+    captured = _popen_stub_with_stdout(["keep\n", "skip\n", "keep\n"])
+
+    def transform(line):
+        return None if line.startswith("skip") else line
+
+    with patch("subprocess.Popen", return_value=captured):
+        adapter.docker_exec(["echo"], line_transform=transform)
+
+    # Only the "keep" lines reach stdout.
+    assert capsys.readouterr().out == "keep\nkeep\n"
+
+
+def test_docker_exec_line_transform_appends_missing_newline(adapter, capsys):
+    """Transformed output without a trailing newline gets one appended."""
+    captured = _popen_stub_with_stdout(["in\n"])
+
+    def transform(line):
+        return line.rstrip("\n")  # strip the newline
+
+    with patch("subprocess.Popen", return_value=captured):
+        adapter.docker_exec(["echo"], line_transform=transform)
+
+    assert capsys.readouterr().out == "in\n"
+
+
+def test_docker_exec_line_transform_without_merge_stderr_leaves_stderr_inherited(adapter):
+    """``merge_stderr=False`` with a transform uses default stderr (parent's)."""
+    captured = _popen_stub_with_stdout([])
+
+    with patch("subprocess.Popen", return_value=captured) as popen:
+        adapter.docker_exec(["echo"], line_transform=lambda line: line, merge_stderr=False)
+
+    assert popen.call_args.kwargs.get("stderr") is None
+
+
+def test_docker_exec_line_transform_ignored_in_interactive_mode(adapter):
+    """Interactive shells can't route through a line transform; fall back to streaming."""
+    with patch("subprocess.Popen", return_value=_make_popen_mock()) as popen:
+        adapter.docker_exec(["bash"], interactive=True, line_transform=lambda line: line)
+    # ``stdout`` was NOT piped -- streaming-transform path was bypassed.
+    assert popen.call_args.kwargs.get("stdout") is None
+
+
+# ----- captured and stdin docker_exec variants -----
+
+
+def test_docker_exec_captured_builds_argv_and_captures(adapter):
     with patch("subprocess.run", return_value=_make_completed(stdout="hi\n")) as run:
-        result = adapter.compose_exec_captured(["echo", "hi"])
+        result = adapter.docker_exec_captured(["echo", "hi"])
     assert result.stdout == "hi\n"
-    run_args = run.call_args.args[0]
-    assert run_args[:2] == ["docker", "compose"]
-    assert run_args[-7:] == ["exec", "-T", "-u", "user", "svc", "echo", "hi"]
-
-
-def test_compose_exec_captured_includes_timeout(adapter):
-    with patch("subprocess.run", return_value=_make_completed()) as run:
-        adapter.compose_exec_captured(["true"])
+    assert run.call_args.args[0] == [
+        "docker",
+        "exec",
+        "-i",
+        "-u",
+        "user",
+        "svc_container",
+        "echo",
+        "hi",
+    ]
     assert run.call_args.kwargs["timeout"] > 0
     assert run.call_args.kwargs["capture_output"] is True
 
 
-def test_compose_exec_captured_timeout_raises(adapter):
+def test_docker_exec_captured_timeout_raises(adapter):
     with (
         patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="x", timeout=30)),
         pytest.raises(ContainerError, match="timed out"),
     ):
-        adapter.compose_exec_captured(["hung"])
+        adapter.docker_exec_captured(["hung"])
 
 
-def test_compose_exec_with_stdin_pipes_input(adapter):
+def test_docker_exec_with_stdin_pipes_input(adapter):
     with patch("subprocess.run", return_value=_make_completed()) as run:
-        adapter.compose_exec_with_stdin(["cat"], "payload\n")
+        adapter.docker_exec_with_stdin(["cat"], "payload\n")
     assert run.call_args.kwargs["input"] == "payload\n"
+    assert run.call_args.args[0][:6] == [
+        "docker",
+        "exec",
+        "-i",
+        "-u",
+        "user",
+        "svc_container",
+    ]
 
 
-def test_compose_exec_with_stdin_timeout_raises(adapter):
+def test_docker_exec_with_stdin_timeout_raises(adapter):
     with (
         patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="x", timeout=30)),
         pytest.raises(ContainerError, match="timed out"),
     ):
-        adapter.compose_exec_with_stdin(["cat"], "payload")
+        adapter.docker_exec_with_stdin(["cat"], "payload")
 
 
-def test_compose_ps_uses_json_format(adapter):
-    with patch("subprocess.run", return_value=_make_completed(stdout="[]")) as run:
-        result = adapter.compose_ps()
-    assert result.stdout == "[]"
-    run_args = run.call_args.args[0]
-    assert "ps" in run_args
-    assert run_args[-2:] == ["--format", "json"]
+# ----- docker_inspect_state -----
+
+
+def test_docker_inspect_state_builds_argv(adapter):
+    with patch("subprocess.run", return_value=_make_completed(stdout="running\n")) as run:
+        result = adapter.docker_inspect_state()
+    assert result.stdout == "running\n"
+    assert run.call_args.args[0] == [
+        "docker",
+        "inspect",
+        "-f",
+        "{{.State.Status}}",
+        "svc_container",
+    ]
+
+
+def test_docker_inspect_state_timeout_raises(adapter):
+    with (
+        patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="x", timeout=30)),
+        pytest.raises(ContainerError, match="timed out"),
+    ):
+        adapter.docker_inspect_state()
+
+
+def test_docker_inspect_state_surfaces_non_zero_exit(adapter):
+    with patch(
+        "subprocess.run",
+        return_value=_make_completed(returncode=1, stderr="Error: No such object: svc_container\n"),
+    ):
+        result = adapter.docker_inspect_state()
+    assert result.returncode == 1
+    assert "no such object" in result.stderr.lower()
 
 
 # ----- image helpers -----
@@ -235,6 +400,15 @@ def test_image_name_returns_none_on_non_zero_exit(adapter):
 def test_image_name_returns_none_when_empty(adapter):
     with patch("subprocess.run", return_value=_make_completed(stdout="\n")):
         assert adapter.image_name() is None
+
+
+def test_image_name_timeout_raises(adapter):
+    """image_name goes through _run_captured; the bounded timeout must surface."""
+    with (
+        patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="x", timeout=30)),
+        pytest.raises(ContainerError, match="timed out"),
+    ):
+        adapter.image_name()
 
 
 def test_remove_image_no_op_when_no_image(adapter):

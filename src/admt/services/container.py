@@ -6,13 +6,18 @@ Wraps ``DockerAdapter`` with operations admt cares about -- ``start``/
 which materializes ``/tmp/admt/<project>/env_snapshot.sh`` and
 ``/tmp/admt/<project>/exec.sh`` inside the container per ARCHITECTURE.md
 Environment Activation. The proxy script is what every subsequent
-``docker compose exec`` runs, so the full ``env/activate`` is paid for
-only once (or after ``admt env refresh``).
+``docker exec`` runs, so the full ``env/activate`` is paid for only once
+(or after ``admt env refresh``).
+
+Lifecycle calls (``start``, ``stop``, ``rm``, image ops) go through
+``docker compose`` because they need the compose file. Status probes,
+``exec``, and snapshot I/O target the container by name via plain
+``docker`` -- ~20x faster than the compose equivalent on Docker Desktop
+for Mac, where compose-plugin startup dominates each invocation.
 """
 
 from __future__ import annotations
 
-import json
 import re
 from enum import StrEnum
 from typing import TYPE_CHECKING
@@ -26,7 +31,7 @@ from admt.exceptions import ContainerError
 _VALID_SHELL_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 if TYPE_CHECKING:
-    from admt.adapters.docker import CommandResult, DockerAdapter
+    from admt.adapters.docker import CommandResult, DockerAdapter, LineTransform
     from admt.services.config import ProjectConfig
     from admt.services.output import OutputService
 
@@ -90,21 +95,28 @@ class ContainerService:
         Bypasses the admt proxy script; the container's ``.bashrc`` already
         sources ``env/activate`` (or the admt snapshot) on login.
         """
-        self._echo_compose(f"exec -it -u user {self._project.service_name} /bin/bash")
-        return self._docker.compose_exec(["/bin/bash"], interactive=True).returncode
+        self._output.command_echo(
+            f"docker exec -it -u user {self._project.container_name} /bin/bash"
+        )
+        return self._docker.docker_exec(["/bin/bash"], interactive=True).returncode
 
     def status(self) -> ContainerStatus:
-        """Probe the compose service's runtime state."""
-        result = self._docker.compose_ps()
+        """Probe the container's runtime state via ``docker inspect``.
+
+        Distinguishes NOT_FOUND (container doesn't exist) from STOPPED
+        (exists but isn't running) by the ``No such object`` marker docker
+        emits on stderr when the name doesn't resolve.
+        """
+        result = self._docker.docker_inspect_state()
         if result.returncode != 0:
+            if "no such object" in result.stderr.lower():
+                return ContainerStatus.NOT_FOUND
             return ContainerStatus.UNKNOWN
-        entries = self._parse_ps_json(result.stdout)
-        entry = entries.get(self._project.service_name)
-        if entry is None:
-            return ContainerStatus.NOT_FOUND
-        state = str(entry.get("State", "")).lower()
+        state = result.stdout.strip().lower()
         if state == "running":
             return ContainerStatus.RUNNING
+        if not state:
+            return ContainerStatus.NOT_FOUND
         return ContainerStatus.STOPPED
 
     def is_running(self) -> bool:
@@ -181,30 +193,51 @@ class ContainerService:
         interactive: bool = False,
         merge_stderr: bool = False,
         capture_output: bool = False,
+        line_transform: LineTransform | None = None,
     ) -> int:
         """Run ``command`` inside the container via the admt env proxy.
 
-        Guarantees the container is running (``ensure_running``) and the
-        env snapshot is materialized (``ensure_env_snapshot``) before the
-        exec. ``merge_stderr`` / ``capture_output`` are forwarded to the
-        DockerAdapter -- see its docstring for semantics. In quiet mode
-        (``capture_output=True``), the buffered output is emitted verbatim
-        on failure via ``OutputService.emit_captured`` so the user still
-        sees what went wrong.
+        Optimistic path: invoke the proxy directly and recover on failure.
+        Pre-flighting ``is_running`` and ``ensure_env_snapshot`` on every
+        call is expensive (each is a full ``docker compose`` round-trip on
+        Docker Desktop for Mac -- ~3s apiece). On the steady-state happy
+        path -- container up, snapshot present -- this saves two of three
+        docker calls.
+
+        If the initial exec fails, ``_recover_infrastructure`` diagnoses
+        whether the container is down (prompt / auto-start / error per
+        ``--yes`` / ``ADMT_NONINTERACTIVE``) or whether the snapshot was
+        wiped by an external container restart (transparent regenerate).
+        If neither applies, the failure is the user's command -- propagate
+        as-is without a spurious retry.
+
+        ``merge_stderr`` / ``capture_output`` / ``line_transform`` are
+        forwarded to the DockerAdapter -- see its docstring for semantics.
+        In quiet mode (``capture_output=True``), the buffered output is
+        emitted verbatim on failure via ``OutputService.emit_captured`` so
+        the user still sees what went wrong. ``line_transform`` is ignored
+        under ``capture_output`` or ``interactive`` (both conflict with
+        line-level streaming).
         """
-        self.ensure_running()
-        self.ensure_env_snapshot()
         proxy = self._proxy_path()
-        echo_str = (
-            f"docker compose exec -u user {self._project.service_name} {proxy} bash -c {command!r}"
-        )
+        echo_str = f"docker exec -u user {self._project.container_name} {proxy} bash -c {command!r}"
         self._output.command_echo(echo_str)
-        result = self._docker.compose_exec(
+        result = self._docker.docker_exec(
             [proxy, "bash", "-c", command],
             interactive=interactive,
             merge_stderr=merge_stderr,
             capture_output=capture_output,
+            line_transform=line_transform,
         )
+        if result.returncode != 0 and self._recover_infrastructure():
+            self._output.command_echo(echo_str)
+            result = self._docker.docker_exec(
+                [proxy, "bash", "-c", command],
+                interactive=interactive,
+                merge_stderr=merge_stderr,
+                capture_output=capture_output,
+                line_transform=line_transform,
+            )
         if capture_output and result.returncode != 0:
             if result.stdout:
                 self._output.emit_captured(result.stdout)
@@ -218,23 +251,74 @@ class ContainerService:
             self._output.error(f"Failed (exit {result.returncode}): {echo_str}")
         return result.returncode
 
+    def exec_captured(self, command: str, *, merge_stderr: bool = True) -> CommandResult:
+        """Run ``command`` and return the captured ``CommandResult``.
+
+        Like ``exec`` but always captures output and returns the full result
+        so callers can post-process it. Used by ``admt what`` to translate
+        the redo target listing into admt-command equivalents.
+        """
+        proxy = self._proxy_path()
+        echo_str = f"docker exec -u user {self._project.container_name} {proxy} bash -c {command!r}"
+        self._output.command_echo(echo_str)
+        result = self._docker.docker_exec(
+            [proxy, "bash", "-c", command],
+            interactive=False,
+            merge_stderr=merge_stderr,
+            capture_output=True,
+        )
+        if result.returncode != 0 and self._recover_infrastructure():
+            self._output.command_echo(echo_str)
+            result = self._docker.docker_exec(
+                [proxy, "bash", "-c", command],
+                interactive=False,
+                merge_stderr=merge_stderr,
+                capture_output=True,
+            )
+        if result.returncode != 0 and not self._output.verbose:
+            self._output.error(f"Failed (exit {result.returncode}): {echo_str}")
+        return result
+
+    def _recover_infrastructure(self) -> bool:
+        """Diagnose a failed exec and fix recoverable infrastructure state.
+
+        Returns True when the caller should retry -- either the container
+        was down and we started it, or ``/tmp/admt/<project>/`` was wiped
+        and we regenerated the snapshot. Returns False when everything
+        was already fine, meaning the failure was the user's command and
+        there is nothing to retry.
+        """
+        if not self.is_running():
+            # Honors --yes / ADMT_NONINTERACTIVE / interactive prompt; raises
+            # ContainerError on decline or in non-interactive mode. start()
+            # regenerates the snapshot as part of its flow.
+            self.ensure_running()
+            return True
+        return self.ensure_env_snapshot()
+
     def refresh(self) -> None:
         """Delete the cached snapshot and regenerate it from ``env/activate``."""
-        self._docker.compose_exec_captured(["rm", "-rf", self._project_tmp_dir()])
+        self._docker.docker_exec_captured(["rm", "-rf", self._project_tmp_dir()])
         self.ensure_env_snapshot()
         self._output.success("Environment snapshot regenerated.")
 
-    def ensure_env_snapshot(self) -> None:
-        """Write ``env_snapshot.sh`` and ``exec.sh`` into the container when missing."""
+    def ensure_env_snapshot(self) -> bool:
+        """Write ``env_snapshot.sh`` and ``exec.sh`` into the container when missing.
+
+        Returns True when the snapshot had to be (re)generated, False when
+        it was already present and nothing was written. Used by ``exec``
+        to decide whether a retry is warranted.
+        """
         proxy = self._proxy_path()
-        check = self._docker.compose_exec_captured(["test", "-f", proxy])
+        check = self._docker.docker_exec_captured(["test", "-f", proxy])
         if check.returncode == 0:
-            return
+            return False
         baseline = self._capture_env(["env"])
         activate = str(self._project.activate_script)
         activated = self._capture_env(["bash", "-c", f"source {activate} && env"])
         self._write_container_file(self._snapshot_path(), self._build_snapshot(baseline, activated))
         self._write_container_file(proxy, self._build_proxy(), executable=True)
+        return True
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -254,7 +338,7 @@ class ContainerService:
         return f"{self._project_tmp_dir()}/env_snapshot.sh"
 
     def _capture_env(self, cmd: list[str]) -> dict[str, str]:
-        result = self._docker.compose_exec_captured(cmd)
+        result = self._docker.docker_exec_captured(cmd)
         if result.returncode != 0:
             msg = (
                 f"Failed to capture container environment (exit {result.returncode}): "
@@ -303,7 +387,7 @@ class ContainerService:
     def _write_container_file(self, path: str, content: str, *, executable: bool = False) -> None:
         project_dir = self._project_tmp_dir()
         cmd = ["bash", "-c", f"mkdir -p {project_dir} && cat > {path}"]
-        result = self._docker.compose_exec_with_stdin(cmd, content)
+        result = self._docker.docker_exec_with_stdin(cmd, content)
         if result.returncode != 0:
             msg = (
                 f"Failed to write '{path}' in container (exit {result.returncode}): "
@@ -311,42 +395,10 @@ class ContainerService:
             )
             raise ContainerError(msg)
         if executable:
-            chmod = self._docker.compose_exec_captured(["chmod", "+x", path])
+            chmod = self._docker.docker_exec_captured(["chmod", "+x", path])
             if chmod.returncode != 0:
                 msg = f"Failed to chmod '{path}' in container."
                 raise ContainerError(msg)
-
-    @staticmethod
-    def _parse_ps_json(output: str) -> dict[str, dict[str, object]]:
-        """Parse ``docker compose ps --format json``.
-
-        v2 emits newline-delimited JSON (one object per line). Some older
-        builds emit a single JSON array. Handle both.
-        """
-        text = output.strip()
-        if not text:
-            return {}
-        services: dict[str, dict[str, object]] = {}
-        if text.startswith("["):
-            try:
-                entries = json.loads(text)
-            except json.JSONDecodeError:
-                return {}
-            for entry in entries:
-                if isinstance(entry, dict):
-                    services[str(entry.get("Service", ""))] = entry
-            return services
-        for line in text.splitlines():
-            stripped = line.strip()
-            if not stripped:
-                continue
-            try:
-                entry = json.loads(stripped)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(entry, dict):
-                services[str(entry.get("Service", ""))] = entry
-        return services
 
     @staticmethod
     def _raise_on_failure(action: str, result: CommandResult) -> None:

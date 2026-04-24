@@ -14,3 +14,4 @@ class CleanCommand(ContainerPassthroughCommand):
     help: ClassVar[str] = "Remove build artifacts (redo clean; --all for clean_all)."
     redo_target: ClassVar[str] = "clean"
     supports_all: ClassVar[bool] = True
+    status_verb: ClassVar[str | None] = "cleaning"

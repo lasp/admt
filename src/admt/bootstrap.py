@@ -68,6 +68,7 @@ def build_container_service(context: Context) -> ContainerService:
     docker = DockerAdapter(
         compose_file=project.compose_file,
         service_name=project.service_name,
+        container_name=project.container_name,
     )
     context.path_mapper = PathMapperService(project.volume_mounts)
     return ContainerService(docker=docker, project=project, output=context.output)

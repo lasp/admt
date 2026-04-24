@@ -13,3 +13,4 @@ class ProveCommand(ContainerPassthroughCommand):
     name: ClassVar[str] = "prove"
     help: ClassVar[str] = "Run SPARK formal verification (redo prove)."
     redo_target: ClassVar[str] = "prove"
+    status_verb: ClassVar[str | None] = "proving"
