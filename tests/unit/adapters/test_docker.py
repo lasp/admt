@@ -328,6 +328,18 @@ def test_docker_exec_captured_timeout_raises(adapter):
         adapter.docker_exec_captured(["hung"])
 
 
+def test_docker_exec_captured_accepts_none_timeout(adapter):
+    """``timeout=None`` is forwarded verbatim so subprocess.run won't enforce a cap.
+
+    Used for long-running captures whose duration is user-bounded -- e.g.,
+    sourcing ``env/activate``, which pip-installs and alr-builds on first
+    run.
+    """
+    with patch("subprocess.run", return_value=_make_completed(stdout="")) as run:
+        adapter.docker_exec_captured(["bash", "-c", "slow"], timeout=None)
+    assert run.call_args.kwargs["timeout"] is None
+
+
 def test_docker_exec_with_stdin_pipes_input(adapter):
     with patch("subprocess.run", return_value=_make_completed()) as run:
         adapter.docker_exec_with_stdin(["cat"], "payload\n")

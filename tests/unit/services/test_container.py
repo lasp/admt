@@ -742,6 +742,38 @@ def test_ensure_env_snapshot_generates_when_missing(svc, docker):
     assert "source /tmp/admt/myproj/env_snapshot.sh" in proxy_content
 
 
+def test_ensure_env_snapshot_activate_call_bypasses_bounded_timeout(svc, docker):
+    """``source env/activate`` can take minutes; it must use ``timeout=None``.
+
+    Regression: the bounded 60s cap killed first-run activations mid-build
+    (pip install, alr build, etc.), so the service must bypass the adapter's
+    default timeout for the activate capture while keeping it for the short
+    baseline ``env`` call.
+    """
+    recorded: list[tuple[list[str], dict[str, object]]] = []
+
+    def capture_side_effect(cmd, **kwargs):
+        recorded.append((list(cmd), dict(kwargs)))
+        if cmd[:2] == ["test", "-f"]:
+            return _fail(code=1)
+        if cmd == ["env"]:
+            return CommandResult(returncode=0, stdout="PATH=/usr/bin\n")
+        if cmd[0] == "bash":
+            return CommandResult(returncode=0, stdout="PATH=/opt/activated\n")
+        return _ok()
+
+    docker.docker_exec_captured.side_effect = capture_side_effect
+    docker.docker_exec_with_stdin.return_value = _ok()
+    svc.ensure_env_snapshot()
+
+    baseline_calls = [kw for cmd, kw in recorded if cmd == ["env"]]
+    activate_calls = [kw for cmd, kw in recorded if cmd[0] == "bash"]
+    # Baseline snapshot stays bounded -- adapter uses its own default timeout.
+    assert baseline_calls == [{}]
+    # Activate capture explicitly disables the timeout.
+    assert activate_calls == [{"timeout": None}]
+
+
 def test_ensure_env_snapshot_raises_on_baseline_capture_failure(svc, docker):
     def capture_side_effect(cmd, **_):
         if cmd[:2] == ["test", "-f"]:

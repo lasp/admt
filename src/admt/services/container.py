@@ -315,7 +315,10 @@ class ContainerService:
             return False
         baseline = self._capture_env(["env"])
         activate = str(self._project.activate_script)
-        activated = self._capture_env(["bash", "-c", f"source {activate} && env"])
+        # env/activate runs pip install, alr build, wget, gprbuild, etc. on
+        # first activation -- legitimately minutes of work. Bypass the
+        # bounded timeout so the activation isn't killed mid-build.
+        activated = self._capture_env(["bash", "-c", f"source {activate} && env"], bounded=False)
         self._write_container_file(self._snapshot_path(), self._build_snapshot(baseline, activated))
         self._write_container_file(proxy, self._build_proxy(), executable=True)
         return True
@@ -337,8 +340,18 @@ class ContainerService:
     def _snapshot_path(self) -> str:
         return f"{self._project_tmp_dir()}/env_snapshot.sh"
 
-    def _capture_env(self, cmd: list[str]) -> dict[str, str]:
-        result = self._docker.docker_exec_captured(cmd)
+    def _capture_env(self, cmd: list[str], *, bounded: bool = True) -> dict[str, str]:
+        """Capture ``env`` output from the container; parse ``KEY=VALUE`` pairs.
+
+        ``bounded=True`` uses the adapter's default timeout (for short
+        snapshots of the container's baseline environment). ``bounded=False``
+        disables the timeout -- used for sourcing ``env/activate``, where
+        first-run work can legitimately run for many minutes.
+        """
+        if bounded:
+            result = self._docker.docker_exec_captured(cmd)
+        else:
+            result = self._docker.docker_exec_captured(cmd, timeout=None)
         if result.returncode != 0:
             msg = (
                 f"Failed to capture container environment (exit {result.returncode}): "
