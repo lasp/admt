@@ -54,10 +54,13 @@ def _env_vars(tmp_path, **overrides):
 
 
 def _seed_stubs(project_dir: Path) -> None:
-    build_src = project_dir / "build" / "src"
-    build_src.mkdir(parents=True)
-    (build_src / "component-foo-implementation.ads").write_text("NEW SPEC\n")
-    (build_src / "component-foo-implementation.adb").write_text("NEW BODY\n")
+    # redo templates lands stubs in ``build/template/``, per Adamant's
+    # ``redo/rules/build_templates.py``. Mirror that layout here so the
+    # integration test exercises the real path.
+    build_template = project_dir / "build" / "template"
+    build_template.mkdir(parents=True)
+    (build_template / "component-foo-implementation.ads").write_text("NEW SPEC\n")
+    (build_template / "component-foo-implementation.adb").write_text("NEW BODY\n")
 
 
 @pytest.fixture
@@ -131,7 +134,7 @@ def test_templates_prompt_decline_via_stdin(registered, mock_container, tmp_path
 
 def test_templates_no_stubs_no_copy(registered, mock_container, tmp_path, monkeypatch):
     root, runner = registered
-    # No build/src/ at all; templates still runs redo and reports "no stubs".
+    # No build/template/ at all; templates still runs redo and reports "no stubs".
     monkeypatch.chdir(root)
     result = runner.invoke(cli, ["-y", "templates"], env=_env_vars(tmp_path))
     assert result.exit_code == 0

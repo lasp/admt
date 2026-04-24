@@ -735,16 +735,18 @@ class ProveCommand(ContainerPassthroughCommand):
 
 ```
 1. Exec `redo templates` in the container (same as other passthroughs)
-2. Identify generated stub files in build/src/ directory on the host
-   (accessible via volume mount). Look for Ada .ads and .adb files
-   matching the component-<name>-implementation.* pattern.
+2. Identify generated stub files in build/template/ directory on the host
+   (accessible via volume mount -- Adamant's redo templates rule writes
+   stubs there; see redo/rules/build_templates.py in adamant). Look for
+   Ada .ads and .adb files matching the component-<name>-implementation.*
+   pattern.
 3. Prompt user: "Copy implementation stubs to source directory? [Y/n]"
    (unless --yes: auto-copy, unless --force: auto-copy without prompt)
    Note: --force skips the confirmation prompt but still creates the backup.
 4. If yes:
    a. Back up existing implementation files to /tmp/admt-backup-XXXX/
    b. Print backup location so user can restore if needed
-   c. Copy generated stubs from build/src/ to source directory
+   c. Copy generated stubs from build/template/ to source directory
    d. Record backup path in /tmp/admt-backup-latest (a plain text file
       containing the absolute path to the backup directory)
 5. Return Result listing files copied and backup location
