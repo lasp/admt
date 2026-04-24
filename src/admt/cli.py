@@ -38,6 +38,7 @@ from admt.commands.env import (
 from admt.commands.prove import ProveCommand
 from admt.commands.publish import PublishCommand
 from admt.commands.style import StyleCommand
+from admt.commands.templates import TemplatesCommand
 from admt.commands.test_cmd import TestCommand
 from admt.commands.what import WhatCommand
 from admt.exceptions import AdmtError
@@ -306,6 +307,19 @@ cli.add_alias("cl", "clean")
 cli.add_alias("p", "prove")
 cli.add_alias("cov", "coverage")
 cli.add_alias("pub", "publish")
+
+
+@cli.command(name="templates")
+@click.argument("path_or_target", required=False)
+@click.option("--undo", is_flag=True, help="Restore files from the most recent templates backup")
+@click.pass_obj
+def templates(admt_ctx: Context, path_or_target: str | None, *, undo: bool) -> None:
+    """Run ``redo templates``, then optionally copy implementation stubs."""
+    _parse_positional(admt_ctx, path_or_target)
+    _run_command(TemplatesCommand(undo=undo), admt_ctx)
+
+
+cli.add_alias("tmpl", "templates")
 
 
 def _run_command(cmd: Command, admt_ctx: Context) -> None:
