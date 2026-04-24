@@ -1,9 +1,12 @@
 """Tests for the CLI adapter layer: ``AliasedGroup`` and the top-level ``cli`` group."""
 
 import click
+import pytest
 from click.testing import CliRunner
 
-from admt.cli import AliasedGroup, cli
+from admt.cli import AliasedGroup, _run_command, cli
+from admt.commands.base import Command
+from admt.context import Context, Result
 
 
 def test_cli_help_prints_tool_description():
@@ -55,12 +58,11 @@ def test_aliased_group_returns_none_for_unknown_command():
 
 def _run_with_probe(args):
     @cli.command("_probe", hidden=True)
-    @click.pass_context
-    def _probe(ctx):
-        flags = ctx.obj
+    @click.pass_obj
+    def _probe(admt_ctx):
         click.echo(
-            f"v={flags['verbose']} q={flags['quiet']} "
-            f"d={flags['debug']} y={flags['yes']} f={flags['force']}"
+            f"v={admt_ctx.verbose} q={admt_ctx.quiet} "
+            f"d={admt_ctx.debug} y={admt_ctx.yes} f={admt_ctx.force}"
         )
 
     try:
@@ -93,3 +95,22 @@ def test_cli_callback_yes_and_force_flags():
     result = _run_with_probe(["-y", "-f"])
     assert result.exit_code == 0
     assert "y=True f=True" in result.output
+
+
+def test_run_command_propagates_non_zero_exit_code():
+    """A Command that returns Result(exit_code!=0) surfaces as a Click exit."""
+    sentinel_exit = 7
+
+    class _Returner(Command):
+        name = "_returner"
+        help = "test"
+        requires_project = False
+
+        def execute(self, context):
+            return Result(exit_code=sentinel_exit)
+
+    admt_ctx = Context.__new__(Context)  # bare instance; output is not referenced
+    admt_ctx.output = None  # unused on the success-but-nonzero path
+    with pytest.raises(click.exceptions.Exit) as exc_info:
+        _run_command(_Returner(), admt_ctx)
+    assert exc_info.value.exit_code == sentinel_exit

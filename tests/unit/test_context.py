@@ -2,11 +2,11 @@
 
 from pathlib import Path
 
-from admt.context import Context, Result
+from admt.context import Result
 
 
-def test_context_defaults_are_falsy():
-    ctx = Context()
+def test_context_defaults_are_falsy(make_context):
+    ctx = make_context()
     assert ctx.verbose is False
     assert ctx.quiet is False
     assert ctx.debug is False
@@ -18,8 +18,8 @@ def test_context_defaults_are_falsy():
     assert ctx.run_all is False
 
 
-def test_context_accepts_overrides():
-    ctx = Context(
+def test_context_accepts_overrides(make_context):
+    ctx = make_context(
         verbose=True,
         target="build/obj/foo.o",
         path=Path("/sim/foo"),
@@ -29,6 +29,12 @@ def test_context_accepts_overrides():
     assert ctx.target == "build/obj/foo.o"
     assert ctx.path == Path("/sim/foo")
     assert ctx.run_all is True
+
+
+def test_context_services_are_attached(make_context):
+    ctx = make_context()
+    assert ctx.config_service is not None
+    assert ctx.output is not None
 
 
 def test_result_defaults():
