@@ -101,6 +101,7 @@ ignore = [
     "ANN",     # test annotations encouraged but not enforced by linter
     "ARG",     # unused fixture args are normal in pytest
     "D",       # test docstrings are optional (test names are documentation)
+    "PLR0913", # pytest fixtures push tests past the default 5-argument limit
 ]
 "src/admt/adapters/**/*.py" = [
     "S603",    # subprocess call -- required for docker/redo integration

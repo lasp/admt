@@ -14,7 +14,7 @@ import pytest
 
 import admt
 from admt.cli import cli as cli_group
-from admt.commands.base import Command
+from admt.commands.base import Command, ContainerPassthroughCommand
 
 SRC_ROOT = Path(__file__).resolve().parents[2] / "src" / "admt"
 COMMANDS_DIR = SRC_ROOT / "commands"
@@ -98,10 +98,20 @@ def test_no_circular_imports():
 
 
 def _all_concrete_command_subclasses():
+    """Discover concrete Command subclasses, skipping base classes like CPC.
+
+    ``ContainerPassthroughCommand`` implements ``execute`` to share the
+    redo-passthrough flow with its real subclasses (BuildCommand, ...), so
+    it is technically "concrete" but is never registered as a CLI command
+    itself. Filter it out explicitly.
+    """
     result: list[type[Command]] = []
     stack: list[type[Command]] = list(Command.__subclasses__())
     while stack:
         cls = stack.pop()
+        if cls is ContainerPassthroughCommand:
+            stack.extend(cls.__subclasses__())
+            continue
         if not getattr(cls, "__abstractmethods__", set()):
             result.append(cls)
         stack.extend(cls.__subclasses__())

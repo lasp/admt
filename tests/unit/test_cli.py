@@ -4,7 +4,8 @@ import click
 import pytest
 from click.testing import CliRunner
 
-from admt.cli import AliasedGroup, _run_command, cli
+from admt.cli import _run_command, cli
+from admt.cli_utils import AliasedGroup
 from admt.commands.base import Command
 from admt.context import Context, Result
 
@@ -54,6 +55,69 @@ def test_aliased_group_returns_none_for_unknown_command():
     group = AliasedGroup()
     ctx = click.Context(group)
     assert group.get_command(ctx, "ghost") is None
+
+
+def test_aliased_group_format_commands_shows_aliases():
+    group = AliasedGroup(name="demo")
+
+    @group.command("build")
+    def _build():
+        """Build things."""
+
+    @group.command("test")
+    def _test():
+        """Run tests."""
+
+    group.add_alias("b", "build")
+    group.add_alias("t", "test")
+
+    runner = CliRunner()
+    # ``--help`` on the group renders the custom command section.
+    result = runner.invoke(group, ["--help"])
+    assert result.exit_code == 0
+    assert "build (b)" in result.output
+    assert "test (t)" in result.output
+
+
+def test_aliased_group_format_commands_with_no_aliases():
+    """A command without an alias renders as its bare name."""
+    group = AliasedGroup(name="demo")
+
+    @group.command("solo")
+    def _solo():
+        """Solo command."""
+
+    runner = CliRunner()
+    result = runner.invoke(group, ["--help"])
+    assert "solo" in result.output
+    assert "solo (" not in result.output
+
+
+def test_aliased_group_format_commands_handles_empty_group():
+    """Empty group emits no Commands section at all."""
+    group = AliasedGroup(name="empty")
+    runner = CliRunner()
+    result = runner.invoke(group, ["--help"])
+    assert result.exit_code == 0
+    assert "Commands:" not in result.output
+
+
+def test_aliased_group_format_commands_hides_hidden_commands():
+    """A command registered with ``hidden=True`` does not appear in --help."""
+    group = AliasedGroup(name="demo")
+
+    @group.command("visible")
+    def _visible():
+        """Visible command."""
+
+    @group.command("ghost", hidden=True)
+    def _ghost():
+        """Ghost command."""
+
+    runner = CliRunner()
+    result = runner.invoke(group, ["--help"])
+    assert "visible" in result.output
+    assert "ghost" not in result.output
 
 
 def _run_with_probe(args):

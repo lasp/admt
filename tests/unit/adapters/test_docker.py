@@ -139,6 +139,30 @@ def test_compose_exec_custom_user(adapter):
     _assert_streamed(adapter, ["exec", "-u", "root", "-T", "svc", "whoami"], popen)
 
 
+def test_compose_exec_merge_stderr_passes_stdout_redirect(adapter):
+    with patch("subprocess.Popen", return_value=_make_popen_mock()) as popen:
+        adapter.compose_exec(["redo", "all"], merge_stderr=True)
+    assert popen.call_args.kwargs["stderr"] is subprocess.STDOUT
+
+
+def test_compose_exec_without_merge_inherits_stderr(adapter):
+    with patch("subprocess.Popen", return_value=_make_popen_mock()) as popen:
+        adapter.compose_exec(["bash", "-c", "true"])
+    # Default stderr is None (inherit parent).
+    assert popen.call_args.kwargs.get("stderr") is None
+
+
+def test_compose_exec_capture_output_uses_subprocess_run(adapter):
+    with patch("subprocess.run", return_value=_make_completed(stdout="ok", stderr="warn")) as run:
+        result = adapter.compose_exec(["redo", "all"], capture_output=True)
+    assert result.returncode == 0
+    assert result.stdout == "ok"
+    assert result.stderr == "warn"
+    # capture_output has no timeout (user-bounded build).
+    assert "timeout" not in run.call_args.kwargs or run.call_args.kwargs["timeout"] is None
+    assert run.call_args.kwargs["capture_output"] is True
+
+
 def test_streaming_forwards_return_code(adapter):
     with patch("subprocess.Popen", return_value=_make_popen_mock(returncode=SENTINEL_EXIT)):
         result = adapter.compose_up()

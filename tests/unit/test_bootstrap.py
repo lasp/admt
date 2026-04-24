@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 from admt.bootstrap import build_container_service, build_context
 from admt.services.config import ProjectConfig
 from admt.services.container import ContainerService
+from admt.services.path_mapper import PathMapperService
 
 
 def _project() -> ProjectConfig:
@@ -44,3 +45,10 @@ def test_build_container_service_wires_docker_adapter():
     container = build_container_service(fake_ctx)
     assert isinstance(container, ContainerService)
     fake_ctx.config_service.get_active_project.assert_called_once()
+
+
+def test_build_container_service_attaches_path_mapper_to_context():
+    fake_ctx = MagicMock()
+    fake_ctx.config_service.get_active_project.return_value = _project()
+    build_container_service(fake_ctx)
+    assert isinstance(fake_ctx.path_mapper, PathMapperService)

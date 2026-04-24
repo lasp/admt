@@ -1,8 +1,13 @@
 """Tests for the Context and Result dataclasses."""
 
 from pathlib import Path
+from unittest.mock import MagicMock
+
+import pytest
 
 from admt.context import Result
+from admt.exceptions import ConfigError, PathNotMappedError
+from admt.services.path_mapper import PathMapperService
 
 
 def test_context_defaults_are_falsy(make_context):
@@ -35,6 +40,47 @@ def test_context_services_are_attached(make_context):
     ctx = make_context()
     assert ctx.config_service is not None
     assert ctx.output is not None
+
+
+def test_context_path_mapper_defaults_to_none(make_context):
+    ctx = make_context()
+    assert ctx.path_mapper is None
+
+
+def test_resolve_container_path_uses_cwd_by_default(make_context, monkeypatch):
+    base = Path("/sim/proj")
+    mapper = PathMapperService({base: Path("/home/user/proj")})
+    ctx = make_context(path_mapper=mapper)
+    # Simulate "user is in /sim/proj/src/foo"; rely on monkeypatched cwd.
+    monkeypatch.setattr("admt.context.Path.cwd", lambda: base / "src" / "foo")
+    assert ctx.resolve_container_path() == Path("/home/user/proj/src/foo")
+
+
+def test_resolve_container_path_uses_explicit_path(make_context):
+    base = Path("/sim/proj")
+    mapper = PathMapperService({base: Path("/home/user/proj")})
+    ctx = make_context(path_mapper=mapper, path=base / "src" / "bar")
+    assert ctx.resolve_container_path() == Path("/home/user/proj/src/bar")
+
+
+def test_resolve_container_path_raises_without_path_mapper(make_context):
+    ctx = make_context()  # path_mapper not wired
+    with pytest.raises(ConfigError, match="admt env init"):
+        ctx.resolve_container_path()
+
+
+def test_resolve_container_path_propagates_unmapped_error(make_context):
+    mapper = PathMapperService({Path("/sim/other"): Path("/home/user/other")})
+    ctx = make_context(path_mapper=mapper, path=Path("/sim/not-under-any-mount/foo"))
+    # PathNotMappedError is raised by the mapper; Context just lets it propagate.
+    with pytest.raises(PathNotMappedError):
+        ctx.resolve_container_path()
+
+
+def test_make_context_factory_accepts_path_mapper_override(make_context):
+    sentinel = MagicMock(spec=PathMapperService)
+    ctx = make_context(path_mapper=sentinel)
+    assert ctx.path_mapper is sentinel
 
 
 def test_result_defaults():

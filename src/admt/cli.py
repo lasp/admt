@@ -14,6 +14,11 @@ from typing import TYPE_CHECKING
 import click
 
 from admt.bootstrap import build_container_service, build_context
+from admt.cli_utils import AliasedGroup
+from admt.commands.analyze import AnalyzeCommand
+from admt.commands.build import BuildCommand
+from admt.commands.clean import CleanCommand
+from admt.commands.coverage import CoverageCommand
 from admt.commands.env import (
     EnvBuildCommand,
     EnvExecCommand,
@@ -30,32 +35,16 @@ from admt.commands.env import (
     EnvStopCommand,
     EnvUseCommand,
 )
+from admt.commands.prove import ProveCommand
+from admt.commands.publish import PublishCommand
+from admt.commands.style import StyleCommand
+from admt.commands.test_cmd import TestCommand
+from admt.commands.what import WhatCommand
 from admt.exceptions import AdmtError
 
 if TYPE_CHECKING:
-    from typing import Any
-
     from admt.commands.base import Command
     from admt.context import Context
-
-
-class AliasedGroup(click.Group):
-    """Click group that resolves command aliases (e.g., ``admt b`` -> ``admt build``)."""
-
-    # click.Group.__init__ accepts **attrs: Any; we pass them through verbatim.
-    def __init__(self, *args: Any, **kwargs: Any) -> None:  # noqa: ANN401
-        """Initialize the group with an empty alias map."""
-        super().__init__(*args, **kwargs)
-        self._aliases: dict[str, str] = {}
-
-    def add_alias(self, alias: str, command_name: str) -> None:
-        """Register an alias that resolves to an existing command name."""
-        self._aliases[alias] = command_name
-
-    def get_command(self, ctx: click.Context, cmd_name: str) -> click.Command | None:
-        """Resolve aliases before dispatching to the underlying command."""
-        resolved = self._aliases.get(cmd_name, cmd_name)
-        return super().get_command(ctx, resolved)
 
 
 @click.group(cls=AliasedGroup)
@@ -196,6 +185,127 @@ def env_rm(admt_ctx: Context, *, volumes: bool, image: bool, remove_all: bool) -
 def env_list(admt_ctx: Context) -> None:
     """List registered projects."""
     _run_command(EnvListCommand(), admt_ctx)
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 redo passthrough commands.
+# ---------------------------------------------------------------------------
+
+
+def _parse_positional(admt_ctx: Context, arg: str | None) -> None:
+    """Populate ``context.path`` (when ``arg`` is a directory on disk) or ``context.target``."""
+    if not arg:
+        return
+    resolved = (Path.cwd() / arg).resolve(strict=False)
+    if resolved.is_dir():
+        admt_ctx.path = resolved
+    else:
+        admt_ctx.target = arg
+
+
+@cli.command(name="build")
+@click.argument("path_or_target", required=False)
+@click.pass_obj
+def build(admt_ctx: Context, path_or_target: str | None) -> None:
+    """Build via redo (default: redo all). PATH_OR_TARGET cd's or names a target."""
+    _parse_positional(admt_ctx, path_or_target)
+    _run_command(BuildCommand(), admt_ctx)
+
+
+@cli.command(name="what")
+@click.argument("path_or_target", required=False)
+@click.pass_obj
+def what(admt_ctx: Context, path_or_target: str | None) -> None:
+    """List buildable targets (redo what)."""
+    _parse_positional(admt_ctx, path_or_target)
+    _run_command(WhatCommand(), admt_ctx)
+
+
+@cli.command(name="test")
+@click.argument("path_or_target", required=False)
+@click.option("--all", "-a", "run_all", is_flag=True, help="Switch to redo test_all")
+@click.pass_obj
+def test(admt_ctx: Context, path_or_target: str | None, *, run_all: bool) -> None:
+    """Run tests via redo (--all switches to test_all)."""
+    _parse_positional(admt_ctx, path_or_target)
+    admt_ctx.run_all = run_all
+    _run_command(TestCommand(), admt_ctx)
+
+
+@cli.command(name="style")
+@click.argument("path_or_target", required=False)
+@click.option("--all", "-a", "run_all", is_flag=True, help="Switch to redo style_all")
+@click.pass_obj
+def style(admt_ctx: Context, path_or_target: str | None, *, run_all: bool) -> None:
+    """Check code style via redo (--all switches to style_all)."""
+    _parse_positional(admt_ctx, path_or_target)
+    admt_ctx.run_all = run_all
+    _run_command(StyleCommand(), admt_ctx)
+
+
+@cli.command(name="analyze")
+@click.argument("path_or_target", required=False)
+@click.option("--all", "-a", "run_all", is_flag=True, help="Switch to redo analyze_all")
+@click.pass_obj
+def analyze(admt_ctx: Context, path_or_target: str | None, *, run_all: bool) -> None:
+    """Run static analysis via redo (--all switches to analyze_all)."""
+    _parse_positional(admt_ctx, path_or_target)
+    admt_ctx.run_all = run_all
+    _run_command(AnalyzeCommand(), admt_ctx)
+
+
+@cli.command(name="clean")
+@click.argument("path_or_target", required=False)
+@click.option("--all", "-a", "run_all", is_flag=True, help="Switch to redo clean_all")
+@click.pass_obj
+def clean(admt_ctx: Context, path_or_target: str | None, *, run_all: bool) -> None:
+    """Remove build artifacts via redo (--all switches to clean_all)."""
+    _parse_positional(admt_ctx, path_or_target)
+    admt_ctx.run_all = run_all
+    _run_command(CleanCommand(), admt_ctx)
+
+
+@cli.command(name="prove")
+@click.argument("path_or_target", required=False)
+@click.pass_obj
+def prove(admt_ctx: Context, path_or_target: str | None) -> None:
+    """Run SPARK formal verification via redo."""
+    _parse_positional(admt_ctx, path_or_target)
+    _run_command(ProveCommand(), admt_ctx)
+
+
+@cli.command(name="coverage")
+@click.argument("path_or_target", required=False)
+@click.option("--all", "-a", "run_all", is_flag=True, help="Switch to redo coverage_all")
+@click.pass_obj
+def coverage(admt_ctx: Context, path_or_target: str | None, *, run_all: bool) -> None:
+    """Generate coverage reports via redo (--all switches to coverage_all)."""
+    _parse_positional(admt_ctx, path_or_target)
+    admt_ctx.run_all = run_all
+    _run_command(CoverageCommand(), admt_ctx)
+
+
+@cli.command(name="publish")
+@click.argument("path_or_target", required=False)
+@click.option("--all", "-a", "run_all", is_flag=True, help="Switch to redo publish_all")
+@click.pass_obj
+def publish(admt_ctx: Context, path_or_target: str | None, *, run_all: bool) -> None:
+    """Publish build artifacts via redo (--all switches to publish_all)."""
+    _parse_positional(admt_ctx, path_or_target)
+    admt_ctx.run_all = run_all
+    _run_command(PublishCommand(), admt_ctx)
+
+
+# Passthrough aliases -- keep in sync with MVP_PLAN Phase 3 command table.
+cli.add_alias("b", "build")
+cli.add_alias("w", "what")
+cli.add_alias("t", "test")
+cli.add_alias("s", "style")
+cli.add_alias("an", "analyze")
+cli.add_alias("cl", "clean")
+cli.add_alias("p", "prove")
+cli.add_alias("cov", "coverage")
+cli.add_alias("pub", "publish")
 
 
 def _run_command(cmd: Command, admt_ctx: Context) -> None:

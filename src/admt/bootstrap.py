@@ -17,6 +17,7 @@ from admt.context import Context
 from admt.services.config import ConfigService
 from admt.services.container import ContainerService
 from admt.services.output import OutputService
+from admt.services.path_mapper import PathMapperService
 
 
 def build_context(
@@ -55,6 +56,10 @@ def build_context(
 def build_container_service(context: Context) -> ContainerService:
     """Resolve the active project and wire a ContainerService for it.
 
+    Also attaches a ``PathMapperService`` to ``context.path_mapper`` so
+    passthrough commands can resolve host paths to container paths without
+    another project lookup.
+
     Raises ``ConfigError`` via ``get_active_project`` when no project is
     configured -- callers should let that propagate so the CLI adapter
     formats the standard "run 'admt env init'" error.
@@ -64,4 +69,5 @@ def build_container_service(context: Context) -> ContainerService:
         compose_file=project.compose_file,
         service_name=project.service_name,
     )
+    context.path_mapper = PathMapperService(project.volume_mounts)
     return ContainerService(docker=docker, project=project, output=context.output)

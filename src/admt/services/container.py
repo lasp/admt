@@ -148,16 +148,62 @@ class ContainerService:
     # Exec + env snapshot
     # ------------------------------------------------------------------
 
-    def exec(self, command: str, *, interactive: bool = False) -> int:
-        """Run ``command`` inside the container via the admt env proxy."""
+    def ensure_running(self) -> None:
+        """Bring the container up if it's not already running.
+
+        Honors the Output flags: ``--yes`` auto-starts without prompting,
+        ``ADMT_NONINTERACTIVE`` raises a clear error instead of prompting,
+        interactive mode prompts with default "yes" (start). An explicit
+        "no" raises ``ContainerError`` so the command aborts cleanly.
+        """
+        if self.is_running():
+            return
+        not_running = f"Container '{self._project.container_name}' is not running."
+        if self._output.noninteractive:
+            msg = f"{not_running} Run 'admt env start' first, or pass '--yes' to auto-start."
+            raise ContainerError(msg)
+        if self._output.yes or self._output.prompt(f"{not_running} Start it?", default=True):
+            self.start()
+            return
+        msg = f"{not_running} Declined to start; cannot proceed."
+        raise ContainerError(msg)
+
+    def exec(
+        self,
+        command: str,
+        *,
+        interactive: bool = False,
+        merge_stderr: bool = False,
+        capture_output: bool = False,
+    ) -> int:
+        """Run ``command`` inside the container via the admt env proxy.
+
+        Guarantees the container is running (``ensure_running``) and the
+        env snapshot is materialized (``ensure_env_snapshot``) before the
+        exec. ``merge_stderr`` / ``capture_output`` are forwarded to the
+        DockerAdapter -- see its docstring for semantics. In quiet mode
+        (``capture_output=True``), the buffered output is emitted verbatim
+        on failure via ``OutputService.emit_captured`` so the user still
+        sees what went wrong.
+        """
+        self.ensure_running()
         self.ensure_env_snapshot()
         proxy = self._proxy_path()
         self._output.command_echo(
             f"docker compose exec -u user {self._project.service_name} {proxy} bash -c {command!r}"
         )
-        return self._docker.compose_exec(
-            [proxy, "bash", "-c", command], interactive=interactive
-        ).returncode
+        result = self._docker.compose_exec(
+            [proxy, "bash", "-c", command],
+            interactive=interactive,
+            merge_stderr=merge_stderr,
+            capture_output=capture_output,
+        )
+        if capture_output and result.returncode != 0:
+            if result.stdout:
+                self._output.emit_captured(result.stdout)
+            if result.stderr:
+                self._output.emit_captured(result.stderr, to_stderr=True)
+        return result.returncode
 
     def refresh(self) -> None:
         """Delete the cached snapshot and regenerate it from ``env/activate``."""

@@ -1,0 +1,20 @@
+"""``admt test`` -- forward to ``redo test`` (``--all`` switches to ``test_all``).
+
+Module is named ``test_cmd`` to avoid shadowing pytest when test runners
+import ``admt.commands.*`` modules during collection.
+"""
+
+from __future__ import annotations
+
+from typing import ClassVar
+
+from admt.commands.base import ContainerPassthroughCommand
+
+
+class TestCommand(ContainerPassthroughCommand):
+    """Run tests via ``redo test``; ``--all`` switches to ``redo test_all``."""
+
+    name: ClassVar[str] = "test"
+    help: ClassVar[str] = "Run tests (redo test; --all for test_all)."
+    redo_target: ClassVar[str] = "test"
+    supports_all: ClassVar[bool] = True
