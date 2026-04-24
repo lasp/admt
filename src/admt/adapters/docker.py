@@ -193,11 +193,20 @@ class DockerAdapter:
         stderr = subprocess.STDOUT if merge_stderr else None
         return CommandResult(returncode=self._spawn_tracked(cmd, stderr=stderr))
 
-    def docker_exec_captured(self, command: list[str], *, user: str = "user") -> CommandResult:
-        """Run ``command`` via ``docker exec`` with captured output and bounded timeout.
+    def docker_exec_captured(
+        self,
+        command: list[str],
+        *,
+        user: str = "user",
+        timeout: int | None = _BOUNDED_TIMEOUT_SECS,
+    ) -> CommandResult:
+        """Run ``command`` via ``docker exec`` with captured output.
 
         Use for status probes and env-snapshot generation, not for
-        long-running user-facing commands.
+        long-running user-facing commands. ``timeout=None`` disables the
+        bounded cap -- reserved for calls whose duration is user-bounded
+        (e.g., sourcing ``env/activate``, which pip-installs and alr-builds
+        on first run).
         """
         cmd = ["docker", "exec", "-i", "-u", user, self.container_name, *command]
         try:
@@ -206,10 +215,10 @@ class DockerAdapter:
                 capture_output=True,
                 text=True,
                 check=False,
-                timeout=_BOUNDED_TIMEOUT_SECS,
+                timeout=timeout,
             )
         except subprocess.TimeoutExpired as exc:
-            msg = f"docker exec timed out after {_BOUNDED_TIMEOUT_SECS}s."
+            msg = f"docker exec timed out after {timeout}s."
             raise ContainerError(msg) from exc
         return CommandResult(
             returncode=completed.returncode,

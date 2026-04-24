@@ -422,22 +422,23 @@ def test_exec_captured_recovers_via_infrastructure_check(docker):
     )
     # is_running initially True, snapshot check says snapshot missing -> regenerate.
     # Simulate: first docker_exec fails, then _recover_infrastructure returns True
-    # because snapshot was missing; second docker_exec succeeds.
+    # because snapshot was missing; third docker_exec succeeds on retry.
     docker.docker_inspect_state.return_value = CommandResult(returncode=0, stdout="running\n")
-    # First snapshot check returns missing (non-zero); subsequent calls succeed.
-    docker.docker_exec_captured.side_effect = [
-        _fail(code=1),  # snapshot test -f fails (triggers regen)
-        _ok(),  # env capture baseline
-        _ok(),  # env capture activated
-        _ok(),  # chmod +x
-    ]
     docker.docker_exec_with_stdin.return_value = _ok()
-    # First docker_exec fails (triggers recovery), second succeeds.
+    # docker_exec sequence:
+    #   1. exec_captured first try                    -> rc=1 (triggers recovery)
+    #   2. _capture_activated_env streaming activate  -> rc=0
+    #   3. exec_captured retry                        -> rc=0 with payload
     docker.docker_exec.side_effect = [
         CommandResult(returncode=1),
+        CommandResult(returncode=0),
         CommandResult(returncode=0, stdout="payload\n"),
     ]
-    # Seed capture_env to return something parseable.
+    # docker_exec_captured sequence inside ensure_env_snapshot:
+    #   1. test -f proxy                 -> missing (triggers regen)
+    #   2. env (baseline)                -> parseable
+    #   3. cat env_activated             -> parseable (activate wrote it)
+    #   4. chmod +x                      -> ok
     docker.docker_exec_captured.side_effect = [
         _fail(code=1),
         CommandResult(returncode=0, stdout="PATH=/usr/bin\n"),
@@ -545,16 +546,21 @@ def test_exec_recovers_from_wiped_snapshot(svc, docker):
             return _fail(code=1)
         if cmd == ["env"]:
             return CommandResult(returncode=0, stdout="PATH=/usr/bin\n")
-        if cmd[0] == "bash":
+        if cmd[:1] == ["cat"]:
             return CommandResult(returncode=0, stdout="PATH=/opt/active\n")
         return _ok()
 
     docker.docker_exec_captured.side_effect = capture_side_effect
     docker.docker_exec_with_stdin.return_value = _ok()
-    # First exec fails (proxy missing), second succeeds after regen.
-    docker.docker_exec.side_effect = [CommandResult(returncode=127), CommandResult(returncode=0)]
+    # docker_exec sequence: first proxy exec fails -> recovery streams activate
+    # (rc=0) -> retry proxy exec succeeds.
+    docker.docker_exec.side_effect = [
+        CommandResult(returncode=127),
+        CommandResult(returncode=0),
+        CommandResult(returncode=0),
+    ]
     assert svc.exec("echo hi") == 0
-    expected_attempts = 2
+    expected_attempts = 3  # first proxy attempt, activate stream, retry attempt
     assert docker.docker_exec.call_count == expected_attempts
     expected_writes = 2  # snapshot + proxy
     assert docker.docker_exec_with_stdin.call_count == expected_writes
@@ -701,11 +707,12 @@ def test_ensure_env_snapshot_no_op_when_proxy_exists(svc, docker):
 
 
 def test_ensure_env_snapshot_generates_when_missing(svc, docker):
-    # Sequence of captured responses:
-    # 1. test -f exec.sh            -> missing (rc=1)
-    # 2. env                        -> baseline
-    # 3. bash -c source...          -> activated
-    # 4. chmod +x                   -> ok
+    # Captured responses (docker_exec_captured):
+    #   test -f exec.sh            -> missing (rc=1)
+    #   env                        -> baseline env dump
+    #   cat env_activated          -> activated env dump (read back from file)
+    #   chmod +x                   -> ok
+    # Streaming response (docker_exec): the activate bash invocation.
     def capture_side_effect(cmd, **_):
         if cmd[:2] == ["test", "-f"]:
             return _fail(code=1)
@@ -714,7 +721,7 @@ def test_ensure_env_snapshot_generates_when_missing(svc, docker):
                 returncode=0,
                 stdout="PATH=/usr/bin\nHOME=/home/user\n",
             )
-        if cmd[0] == "bash":
+        if cmd[:1] == ["cat"]:
             return CommandResult(
                 returncode=0,
                 stdout=(
@@ -726,6 +733,7 @@ def test_ensure_env_snapshot_generates_when_missing(svc, docker):
         return _ok()
 
     docker.docker_exec_captured.side_effect = capture_side_effect
+    docker.docker_exec.return_value = _ok()
     docker.docker_exec_with_stdin.return_value = _ok()
     assert svc.ensure_env_snapshot() is True
     expected_writes = 2  # one snapshot + one proxy
@@ -742,6 +750,48 @@ def test_ensure_env_snapshot_generates_when_missing(svc, docker):
     assert "source /tmp/admt/myproj/env_snapshot.sh" in proxy_content
 
 
+def test_ensure_env_snapshot_streams_activate_with_merged_stderr(svc, docker):
+    """The activate call goes through streaming ``docker_exec`` (stdio inherited).
+
+    Regression: the activate script's progress (pip install, alr build,
+    etc.) was hidden inside ``docker_exec_captured``, leaving the user
+    staring at a silent terminal for minutes. It must use the streaming
+    ``docker_exec`` path with merged stderr so chatter on either stream
+    reaches the terminal as it arrives. The ``env`` dump itself is
+    redirected to a container-side file to keep it off the user's screen.
+    """
+
+    def capture_side_effect(cmd, **_):
+        if cmd[:2] == ["test", "-f"]:
+            return _fail(code=1)
+        if cmd == ["env"]:
+            return CommandResult(returncode=0, stdout="PATH=/usr/bin\n")
+        if cmd[:1] == ["cat"]:
+            return CommandResult(returncode=0, stdout="PATH=/opt/activated\n")
+        return _ok()
+
+    docker.docker_exec_captured.side_effect = capture_side_effect
+    docker.docker_exec.return_value = _ok()
+    docker.docker_exec_with_stdin.return_value = _ok()
+    svc.ensure_env_snapshot()
+
+    assert docker.docker_exec.call_count == 1
+    args, kwargs = docker.docker_exec.call_args
+    assert args[0][0] == "bash"
+    assert args[0][1] == "-c"
+    shell_cmd = args[0][2]
+    assert "source /home/user/myproj/env/activate" in shell_cmd
+    # ``env`` dump redirected to a container-side file -- not the terminal.
+    assert "env > /tmp/admt/myproj/env_activated" in shell_cmd
+    assert kwargs["merge_stderr"] is True
+    # Read-back uses the short bounded ``cat``, not the streaming path.
+    cat_calls = [
+        call for call in docker.docker_exec_captured.call_args_list if call.args[0][:1] == ["cat"]
+    ]
+    assert len(cat_calls) == 1
+    assert cat_calls[0].args[0] == ["cat", "/tmp/admt/myproj/env_activated"]  # noqa: S108 -- container-side path, not a host tmp file
+
+
 def test_ensure_env_snapshot_raises_on_baseline_capture_failure(svc, docker):
     def capture_side_effect(cmd, **_):
         if cmd[:2] == ["test", "-f"]:
@@ -755,6 +805,40 @@ def test_ensure_env_snapshot_raises_on_baseline_capture_failure(svc, docker):
         svc.ensure_env_snapshot()
 
 
+def test_ensure_env_snapshot_raises_on_activate_streaming_failure(svc, docker):
+    """A non-zero exit from the streaming activate surfaces as ContainerError."""
+
+    def capture_side_effect(cmd, **_):
+        if cmd[:2] == ["test", "-f"]:
+            return _fail(code=1)
+        if cmd == ["env"]:
+            return CommandResult(returncode=0, stdout="PATH=/usr/bin\n")
+        return _ok()
+
+    docker.docker_exec_captured.side_effect = capture_side_effect
+    docker.docker_exec.return_value = CommandResult(returncode=7)
+    with pytest.raises(ContainerError, match="env/activate failed in container"):
+        svc.ensure_env_snapshot()
+
+
+def test_ensure_env_snapshot_raises_on_activated_readback_failure(svc, docker):
+    """If ``cat env_activated`` fails, ContainerError names the file."""
+
+    def capture_side_effect(cmd, **_):
+        if cmd[:2] == ["test", "-f"]:
+            return _fail(code=1)
+        if cmd == ["env"]:
+            return CommandResult(returncode=0, stdout="PATH=/usr/bin\n")
+        if cmd[:1] == ["cat"]:
+            return _fail(code=9, stderr="no such file")
+        return _ok()
+
+    docker.docker_exec_captured.side_effect = capture_side_effect
+    docker.docker_exec.return_value = _ok()
+    with pytest.raises(ContainerError, match="read activated environment"):
+        svc.ensure_env_snapshot()
+
+
 def test_ensure_env_snapshot_raises_on_write_failure(svc, docker):
     def capture_side_effect(cmd, **_):
         if cmd[:2] == ["test", "-f"]:
@@ -762,6 +846,7 @@ def test_ensure_env_snapshot_raises_on_write_failure(svc, docker):
         return CommandResult(returncode=0, stdout="PATH=/usr/bin\n")
 
     docker.docker_exec_captured.side_effect = capture_side_effect
+    docker.docker_exec.return_value = _ok()
     docker.docker_exec_with_stdin.return_value = _fail(code=3, stderr="write failed")
     with pytest.raises(ContainerError, match="Failed to write"):
         svc.ensure_env_snapshot()
@@ -779,6 +864,7 @@ def test_ensure_env_snapshot_raises_on_chmod_failure(svc, docker):
         return CommandResult(returncode=0, stdout="PATH=/usr/bin\n")
 
     docker.docker_exec_captured.side_effect = capture_side_effect
+    docker.docker_exec.return_value = _ok()
     docker.docker_exec_with_stdin.return_value = _ok()
     with pytest.raises(ContainerError, match="chmod"):
         svc.ensure_env_snapshot()
@@ -799,11 +885,12 @@ def test_refresh_deletes_proxy_dir_then_regenerates(svc, docker):
             return _fail(code=1)
         if cmd == ["env"]:
             return CommandResult(returncode=0, stdout="PATH=/usr/bin\n")
-        if cmd[0] == "bash":
+        if cmd[:1] == ["cat"]:
             return CommandResult(returncode=0, stdout="PATH=/opt/activated\n")
         return _ok()
 
     docker.docker_exec_captured.side_effect = capture_side_effect
+    docker.docker_exec.return_value = _ok()
     docker.docker_exec_with_stdin.return_value = _ok()
     svc.refresh()
     # First call was the delete.
