@@ -4,7 +4,9 @@ The command extends the redo passthrough with a post-exec stub-copy dance:
 
 1. Run ``redo templates`` in the container (via the passthrough base).
 2. Look for ``component-*-implementation.{ads,adb}`` in
-   ``<host_cwd>/build/src/`` (the volume-mounted build dir on the host).
+   ``<host_cwd>/build/template/`` (the volume-mounted build dir on the
+   host, where Adamant's ``redo templates`` rule deposits generated
+   stubs -- see ``redo/rules/build_templates.py`` in adamant).
 3. Prompt ``Copy implementation stubs to source directory? [Y/n]``, honoring
    ``--yes``/``--force`` (auto-copy) and ``ADMT_NONINTERACTIVE`` (skip copy
    silently -- the redo itself still ran, which is the useful side effect
@@ -46,13 +48,13 @@ def _latest_backup_marker() -> Path:
     return Path.home() / ".admt" / _MARKER_NAME
 
 
-def _find_stubs(build_src: Path) -> list[Path]:
-    """Return generated implementation stubs under ``build_src``, sorted."""
-    if not build_src.is_dir():
+def _find_stubs(build_template: Path) -> list[Path]:
+    """Return generated implementation stubs under ``build_template``, sorted."""
+    if not build_template.is_dir():
         return []
     stubs: list[Path] = []
-    stubs.extend(build_src.glob("component-*-implementation.ads"))
-    stubs.extend(build_src.glob("component-*-implementation.adb"))
+    stubs.extend(build_template.glob("component-*-implementation.ads"))
+    stubs.extend(build_template.glob("component-*-implementation.adb"))
     return sorted(stubs)
 
 
@@ -82,7 +84,7 @@ class TemplatesCommand(ContainerPassthroughCommand):
 
     def _handle_stub_copy(self, context: Context) -> Result:
         host_cwd = (context.path if context.path is not None else Path.cwd()).resolve(strict=False)
-        stubs = _find_stubs(host_cwd / "build" / "src")
+        stubs = _find_stubs(host_cwd / "build" / "template")
         if not stubs:
             context.output.info("No implementation stubs found; nothing to copy.")
             return Result(exit_code=0)

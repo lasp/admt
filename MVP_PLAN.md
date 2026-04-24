@@ -485,7 +485,7 @@ redo  all
 1. **Implement `commands/templates.py`:**
    - Extends `ContainerPassthroughCommand` with post-exec behavior
    - After `redo templates` succeeds:
-     a. Identify generated stub files in the `build/src/` directory on the host (accessible via the volume mount). Look for Ada `.ads` and `.adb` files matching the `component-<name>-implementation.*` pattern.
+     a. Identify generated stub files in the `build/template/` directory on the host (accessible via the volume mount -- Adamant's `redo templates` rule writes stubs there; see `redo/rules/build_templates.py` in adamant). Look for Ada `.ads` and `.adb` files matching the `component-<name>-implementation.*` pattern.
      b. Prompt user: "Copy implementation stubs to source directory? [Y/n]"
         - With `--yes`: auto-copy
         - With `ADMT_NONINTERACTIVE`: skip copy (just run redo templates)
@@ -493,7 +493,7 @@ redo  all
         - Check if implementation files already exist in the source directory
         - If they exist, back them up to `/tmp/admt-backup-XXXX/`
         - Print the backup location clearly so the user can restore if needed
-        - Copy the generated stubs from `build/` to the source directory
+        - Copy the generated stubs from `build/template/` to the source directory
         - Record the backup path in `/tmp/admt-backup-latest` (a plain text file containing the absolute path)
      d. Report what was done
 
@@ -527,8 +527,8 @@ $ admt templates
 redo  templates
 ...
 Generated stubs found:
-  build/src/component-my_component-implementation.ads
-  build/src/component-my_component-implementation.adb
+  build/template/component-my_component-implementation.ads
+  build/template/component-my_component-implementation.adb
 
 Copy to source directory? [Y/n] y
 Backed up existing files to /tmp/admt-backup-a1b2c3/

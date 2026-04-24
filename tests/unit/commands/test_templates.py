@@ -154,14 +154,18 @@ def test_undo_restores_from_manifest(fake_home, tmp_path, make_context):
 
 
 def _build_project(project_dir: Path) -> None:
-    build_src = project_dir / "build" / "src"
-    build_src.mkdir(parents=True)
-    (build_src / "component-foo-implementation.ads").write_text("NEW SPEC\n")
-    (build_src / "component-foo-implementation.adb").write_text("NEW BODY\n")
+    # redo writes templates to ``build/template/`` (see Adamant's
+    # ``redo/rules/build_templates.py``). Mirror that here so the tests
+    # exercise the real layout and catch regressions of the old
+    # ``build/src/`` search path.
+    build_template = project_dir / "build" / "template"
+    build_template.mkdir(parents=True)
+    (build_template / "component-foo-implementation.ads").write_text("NEW SPEC\n")
+    (build_template / "component-foo-implementation.adb").write_text("NEW BODY\n")
 
 
 def test_handle_stub_copy_no_stubs_info(tmp_path, make_context, capsys):
-    (tmp_path / "build").mkdir()  # no src/ subdir
+    (tmp_path / "build").mkdir()  # no template/ subdir
     ctx, container = _ctx_with_container(make_context, path=tmp_path, yes=True)
     # Short-circuit the parent redo call -- _handle_stub_copy only runs after
     # a successful redo, so we invoke the private method directly.
