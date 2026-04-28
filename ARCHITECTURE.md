@@ -886,6 +886,45 @@ class OutputService:
         With ADMT_NONINTERACTIVE: errors with exit code 3.
         """
         ...
+
+    def choose(self, message: str, choices: list[str]) -> str:
+        """Ask the user to pick one item from ``choices`` and return it.
+
+        Boolean ``prompt`` cannot express "pick one of N" (used by
+        ``admt env init`` when multiple compose files are present).
+
+        - A single-item list returns directly without prompting.
+        - With ADMT_NONINTERACTIVE set: raises ArgumentError -- there is
+          no meaningful default for an arbitrary list.
+        - --yes does NOT auto-resolve choose() -- there is no obvious
+          "default" item; the user has to pick one explicitly.
+        """
+        ...
+
+    def admt(self, message: str, *, bold: bool = True) -> str:
+        """Wrap ``message`` in admt's signature gold (#CFB87C) when stdout is a color TTY.
+
+        - bold=True (default): bold + gold. Used for admt verbs in
+          rewritten output (``build`` in ``build foo.adb``) and for the
+          opening status line of long-running commands (``building...``).
+        - bold=False: gold only. Used for closing markers (``done.``)
+          and for admt-relayed tool messages like multi-word redo
+          status lines (``Compiling 13 objects...``) -- admt-presented
+          but not admt-emphatic.
+
+        Returns the message unchanged when stdout is not a TTY or
+        NO_COLOR is set, so callers can wrap unconditionally.
+        """
+        ...
+
+    def emit_captured(self, content: str, *, to_stderr: bool = False) -> None:
+        """Print captured subprocess output verbatim, bypassing --quiet.
+
+        Used by passthrough commands so that a failed redo invocation
+        in --quiet mode still shows the captured output -- otherwise
+        the user sees only an exit code with no explanation.
+        """
+        ...
 ```
 
 ### Schema Service (Post-MVP)
