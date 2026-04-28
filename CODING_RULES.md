@@ -465,3 +465,5 @@ These rules apply to AI agents contributing to admt. They supplement -- not repl
 6. **Stay within the established directory structure.** Do not create new top-level directories or reorganize existing structure without approval.
 
 7. **When in doubt: smaller, simpler, fewer dependencies.** The right answer is almost always less code, not more.
+
+8. **Never modify the spec to match the code unless explicitly asked to do so by a user.** The spec documents (ARCHITECTURE.md, CODING_RULES.md, TEST_PLAN.md) are the contract; the code is the implementation. When the two disagree, the *default* assumption is the code drifted and needs to come back into alignment with the spec -- not the other way around. Quietly editing the spec to "fix the docs" hides the drift, shifts the goal posts mid-flight, and leaves the user with no record of what changed in the implementation. If you find a divergence, surface it (a retro entry, a PR comment, a question to the user) and wait for an explicit "yes, update the spec" before touching the spec doc. The same holds for *any* of MVP_PLAN.md, README.md, or CLAUDE.md when those documents make claims about how the system behaves.
