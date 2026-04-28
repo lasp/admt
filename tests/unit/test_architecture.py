@@ -179,12 +179,13 @@ def test_only_cli_and_context_assign_to_context_attributes():
 
 
 def _all_concrete_command_subclasses():
-    """Discover concrete Command subclasses, skipping base classes like CPC.
+    """Discover concrete Command subclasses, skipping abstract bases like CPC.
 
-    ``ContainerPassthroughCommand`` implements ``execute`` to share the
-    redo-passthrough flow with its real subclasses (BuildCommand, ...), so
-    it is technically "concrete" but is never registered as a CLI command
-    itself. Filter it out explicitly.
+    ``ContainerPassthroughCommand`` is abstract (Q4): its ``__new__`` raises
+    ``TypeError`` on direct instantiation, and ``__init_subclass__`` requires
+    concrete subclasses to declare ``redo_target``. Python's
+    ``__abstractmethods__`` heuristic doesn't flag CPC (we use ``__new__``,
+    not ``@abstractmethod``), so this loop filters it explicitly.
     """
     result: list[type[Command]] = []
     stack: list[type[Command]] = list(Command.__subclasses__())
