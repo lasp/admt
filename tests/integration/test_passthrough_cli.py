@@ -275,6 +275,28 @@ def test_passthrough_without_active_project_errors(tmp_path):
     assert "No project configured" in result.output
 
 
+# ----- path not mapped (TEST_PLAN.md What-to-Test matrix) -----
+
+
+def test_build_outside_volume_mount_errors(registered, mock_container, tmp_path, monkeypatch):
+    """``admt build`` from a directory outside any volume mount exits 4.
+
+    The active project's mounts cover ``tmp_path / "myproj"`` and
+    ``tmp_path / "adamant"`` (per ``_make_project``). Cwd-ing into
+    ``tmp_path`` itself puts the user above all mounts, so
+    ``PathMapperService.host_to_container`` raises ``PathNotMappedError``
+    -- exit 4 with the mapped-directories listing per TEST_PLAN.md.
+    """
+    _, runner = registered
+    # tmp_path itself is the parent of every mount; nothing maps it.
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(cli, ["build"], env=_env_vars(tmp_path))
+    expected_exit = 4
+    assert result.exit_code == expected_exit, result.output
+    assert "not under any volume mount" in result.output
+    assert "Mapped directories:" in result.output
+
+
 # ----- Phase 5 flag matrix (passthrough) -----
 
 
