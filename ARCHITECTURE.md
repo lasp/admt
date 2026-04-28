@@ -526,15 +526,20 @@ Both scripts are project-specific (keyed by project name in the path). When the 
 1. CLI adapter parses args -> calls BuildCommand.execute(context)
 2. Config service loads active project from ~/.admt/config.yml (or ADMT_ENV override)
 3. Path mapper resolves host cwd -> container path
-4. Container service checks if container is running
-   - Not running? Prompt user: "Container not running. Start it? [Y/n]"
-     (unless --yes: auto-start, unless ADMT_NONINTERACTIVE: error + exit 2)
-5. Container service ensures /tmp/admt/<project>/exec.sh and env_snapshot.sh
-   exist in container (generates on first use or after container recreation)
-6. Container service execs: docker compose exec ... /tmp/admt/<project>/exec.sh ...
+4. Container service execs the proxy directly (optimistic):
+   docker exec -u user <container> /tmp/admt/<project>/exec.sh ...
    with stderr=subprocess.STDOUT to merge redo's stderr into stdout (see Output Routing)
-7. Exit code from redo is returned in Result
+5. On non-zero exit, container service diagnoses via _recover_infrastructure:
+   a. Container down? -> prompt / --yes auto-start / ADMT_NONINTERACTIVE error
+      (start() also regenerates the snapshot as part of its flow). Retry.
+   b. Container up but proxy script missing (snapshot wiped by an external
+      docker compose down/up)? -> regenerate the snapshot transparently. Retry.
+   c. Neither -> the failure is the user's command; propagate the exit code
+      as-is, no spurious retry.
+6. Exit code (from the first attempt or the retry) is returned in Result.
 ```
+
+**Why optimistic, not check-then-execute?** The previous design pre-flighted ``is_running()`` and ``ensure_env_snapshot()`` on every exec. Both are full ``docker`` round-trips (~3s each on Docker Desktop for Mac). On the steady-state happy path -- container up, snapshot present, command works -- those probes contribute nothing and add ~6s per command. The optimistic flow saves them and pays for the diagnostic only when something is actually wrong. The behavior the user sees is identical on every path: ``--yes`` still auto-starts, ``ADMT_NONINTERACTIVE`` still errors with the same message, the exit code reflects the user's actual command failure (not a synthetic infrastructure failure on top). Only the order of ops changed.
 
 ### Passthrough with Optional Path
 
