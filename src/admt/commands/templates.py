@@ -88,7 +88,7 @@ class TemplatesCommand(ContainerPassthroughCommand):
         if not stubs:
             context.output.info("No implementation stubs found; nothing to copy.")
             return Result(exit_code=0)
-        self._print_found(context, stubs)
+        self._print_found(context, stubs, host_cwd)
         if not self._should_copy(context):
             context.output.info("Skipped stub copy.")
             return Result(exit_code=0)
@@ -98,10 +98,20 @@ class TemplatesCommand(ContainerPassthroughCommand):
         return Result(exit_code=0, files_created=copied, files_modified=backed_up)
 
     @staticmethod
-    def _print_found(context: Context, stubs: list[Path]) -> None:
+    def _print_found(context: Context, stubs: list[Path], host_cwd: Path) -> None:
+        """Print stub paths relative to host_cwd so they are copy-pastable.
+
+        Absolute paths from ``glob`` are noisy and machine-specific. Relative
+        paths (e.g., ``build/template/component-foo-implementation.ads``)
+        resolve correctly when the user copy-pastes them from the cwd they
+        ran ``admt templates`` in.
+
+        ``_find_stubs`` only returns paths from ``host_cwd.glob(...)``, so
+        ``relative_to(host_cwd)`` is guaranteed to succeed -- no fallback.
+        """
         context.output.info("Generated stubs found:")
         for stub in stubs:
-            context.output.info(f"  {stub}")
+            context.output.info(f"  {stub.relative_to(host_cwd)}")
 
     @staticmethod
     def _should_copy(context: Context) -> bool:

@@ -251,6 +251,29 @@ def test_handle_stub_copy_backs_up_existing(fake_home, tmp_path, make_context):
     assert result.files_modified
 
 
+def test_handle_stub_copy_prints_relative_paths(fake_home, tmp_path, make_context, capsys):
+    """Stub paths are printed relative to host_cwd so users can copy-paste them.
+
+    Absolute paths (from glob) are machine-specific noise; relative paths
+    (``build/template/component-foo-implementation.ads``) resolve when the
+    user copy-pastes them from the directory they ran ``admt templates`` in.
+    """
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    _build_project(project_dir)
+    # ``_ctx_with_container`` defaults to a quiet OutputService; switch to
+    # non-quiet so info() actually writes to stdout for capsys to capture.
+    output = OutputService(verbose=False, quiet=False, yes=False, noninteractive=False)
+    ctx, _ = _ctx_with_container(make_context, path=project_dir, force=True, output=output)
+    TemplatesCommand()._handle_stub_copy(ctx)
+    out = capsys.readouterr().out
+    assert "Generated stubs found:" in out
+    assert "build/template/component-foo-implementation.ads" in out
+    assert "build/template/component-foo-implementation.adb" in out
+    # No absolute path leaked through (project_dir tmp path absent from output).
+    assert str(project_dir) not in out
+
+
 def test_handle_stub_copy_no_backup_when_no_existing(fake_home, tmp_path, make_context):
     project_dir = tmp_path / "proj"
     project_dir.mkdir()
