@@ -604,6 +604,25 @@ redo    build/obj/Linux/...
 
 **When admt needs to inspect output** (e.g., environment variable capture during snapshot generation): Use `subprocess.PIPE` to capture programmatically. This is the exception, not the default.
 
+### Output Rewriting
+
+Beyond merging stderr into stdout, admt also **rewrites redo's output into admt's vocabulary** so the stream the user sees is continuous with the command they typed. `redo  Compiling 13 objects...` becomes a gold status line; `redo    build/src/foo.adb` becomes `build build/src/foo.adb` (or `admt build build/src/foo.adb` for the `admt what` listing). The rewriting layer lives in `adapters/redo_output.py` (see [Directory Structure](#directory-structure)).
+
+Two callers consume it:
+
+1. **Streaming passthrough commands** (`admt build` et al.) install a per-line `LineTransform` on the `docker_exec` call. Each line redo emits is intercepted before reaching the user's terminal; the transform rewrites or drops it in real time.
+2. **`admt what`** captures the `redo what` output via `exec_captured` and post-processes the buffer once before printing -- the listing is short and benefits from a final cleanup pass.
+
+The rewriter recognizes three line categories on the redo stream:
+
+- **Top-level `redo  <target>` header** (exactly two spaces -- redo's "now processing X" marker). Dropped via `None` -- it's redundant with the verb the user just typed and with admt's own `<verb>...` opening status line.
+- **Multi-word `redo  <message>` status lines** (e.g., `redo  Compiling 13 objects...`, `redo  Moving 13 objects...`). Stripped of the `redo ` prefix and routed through `output.admt(bold=False)` -- admt-relayed, not admt-emphatic.
+- **Single-token `redo    <target>` progress lines** (four-or-more spaces -- nested dependency rebuilds). Rewritten to `[admt ]<verb> <target>` using a small map of redo target names to admt commands (`all`→`admt build`, `test`→`admt test`, `test_all`→`admt test --all`, etc.; unknown targets fall back to `admt build <target>` since `BuildCommand` forwards arbitrary positional targets through to redo). The verb gets bolded gold via `output.admt`; the target tail stays in the terminal's default color so it's still skimmable. Redo's nesting depth (extra spaces beyond the first level) is preserved as separator spacing between verb and target so the dependency tree stays legible.
+
+Anything else (compiler diagnostics, tool warnings, unstructured output) passes through verbatim with its original ANSI codes intact.
+
+In `--quiet` mode the transform is omitted; the captured buffer stays raw and is only emitted on failure via `OutputService.emit_captured`.
+
 ---
 
 ## Command Structure
