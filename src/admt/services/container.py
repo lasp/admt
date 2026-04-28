@@ -1,13 +1,11 @@
-"""Container lifecycle service and env-snapshot proxy.
+"""Container lifecycle service.
 
-Wraps ``DockerAdapter`` with operations admt cares about -- ``start``/
+Wraps ``DockerAdapter`` with the operations admt cares about -- ``start``/
 ``stop``/``restart``/``login``/``status``/``build_image``/``push_image``/
-``pull_image``/``refresh``/``rm``/``exec`` -- plus ``ensure_env_snapshot``,
-which materializes ``/tmp/admt/<project>/env_snapshot.sh`` and
-``/tmp/admt/<project>/exec.sh`` inside the container per ARCHITECTURE.md
-Environment Activation. The proxy script is what every subsequent
-``docker exec`` runs, so the full ``env/activate`` is paid for only once
-(or after ``admt env refresh``).
+``pull_image``/``rm``/``exec``/``refresh``. Env-snapshot proxy materialization
+(per ARCHITECTURE.md §Environment Activation) lives in
+``admt.services.env_snapshot.EnvSnapshotService`` -- this service holds an
+instance and delegates ``ensure_env_snapshot`` and ``refresh`` to it.
 
 Lifecycle calls (``start``, ``stop``, ``rm``, image ops) go through
 ``docker compose`` because they need the compose file. Status probes,
@@ -18,17 +16,11 @@ for Mac, where compose-plugin startup dominates each invocation.
 
 from __future__ import annotations
 
-import re
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from admt.exceptions import ContainerError
-
-# A valid POSIX-ish shell variable name: leading alpha/underscore, then
-# alphanumerics/underscores. ``env`` output occasionally contains stray lines
-# (e.g., activate-script ``echo``s like ``Note:``) that split into a pseudo-
-# ``KEY=VALUE`` where ``KEY`` is not a real identifier -- we skip those.
-_VALID_SHELL_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+from admt.services.env_snapshot import EnvSnapshotService
 
 if TYPE_CHECKING:
     from admt.adapters.docker import CommandResult, DockerAdapter, LineTransform
@@ -58,6 +50,7 @@ class ContainerService:
         self._docker = docker
         self._project = project
         self._output = output
+        self._snapshot = EnvSnapshotService(docker=docker, project=project, output=output)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -314,9 +307,7 @@ class ContainerService:
 
     def refresh(self) -> None:
         """Delete the cached snapshot and regenerate it from ``env/activate``."""
-        self._docker.docker_exec_captured(["rm", "-rf", self._project_tmp_dir()])
-        self.ensure_env_snapshot()
-        self._output.success("Environment snapshot regenerated.")
+        self._snapshot.refresh()
 
     def ensure_env_snapshot(self) -> bool:
         """Write ``env_snapshot.sh`` and ``exec.sh`` into the container when missing.
@@ -325,47 +316,7 @@ class ContainerService:
         it was already present and nothing was written. Used by ``exec``
         to decide whether a retry is warranted.
         """
-        proxy = self._proxy_path()
-        check = self._docker.docker_exec_captured(["test", "-f", proxy])
-        if check.returncode == 0:
-            return False
-        baseline = self._capture_env(["env"])
-        activated = self._capture_activated_env()
-        self._write_container_file(self._snapshot_path(), self._build_snapshot(baseline, activated))
-        self._write_container_file(proxy, self._build_proxy(), executable=True)
-        return True
-
-    def _capture_activated_env(self) -> dict[str, str]:
-        """Source ``env/activate`` with its output streamed live to the user.
-
-        First-run activation can take many minutes (pip installs, alr
-        builds, wget+gprbuild of the Pico runtime). Running it through the
-        ``capture_output`` path hides that progress behind a silent wall of
-        waiting. This path inherits stdio so the user sees the activate
-        script's own chatter (``Setting up...``, ``[Ada] ... [gprlib] ...``,
-        ``Done.``) as it arrives, while the final ``env`` dump is redirected
-        to a container-side file so it doesn't flood the terminal. We then
-        read the file back in a short bounded ``cat`` to do the parse.
-        """
-        project_dir = self._project_tmp_dir()
-        env_file = f"{project_dir}/env_activated"
-        activate = str(self._project.activate_script)
-        shell_cmd = f"mkdir -p {project_dir} && source {activate} && env > {env_file}"
-        self._output.info(
-            "Activating environment in container (first run can take several minutes)..."
-        )
-        result = self._docker.docker_exec(["bash", "-c", shell_cmd], merge_stderr=True)
-        if result.returncode != 0:
-            msg = f"env/activate failed in container (exit {result.returncode}); see output above."
-            raise ContainerError(msg)
-        cat = self._docker.docker_exec_captured(["cat", env_file])
-        if cat.returncode != 0:
-            msg = (
-                f"Failed to read activated environment from '{env_file}' "
-                f"(exit {cat.returncode}): {cat.stderr.strip() or '<no stderr>'}"
-            )
-            raise ContainerError(msg)
-        return self._parse_env_output(cat.stdout)
+        return self._snapshot.ensure()
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -375,84 +326,9 @@ class ContainerService:
         """Emit ``$ docker compose -f <compose_file> <subcommand>`` when verbose."""
         self._output.command_echo(f"docker compose -f {self._project.compose_file} {subcommand}")
 
-    def _project_tmp_dir(self) -> str:
-        return f"/tmp/admt/{self._project.name}"  # noqa: S108 -- container-side path
-
     def _proxy_path(self) -> str:
-        return f"{self._project_tmp_dir()}/exec.sh"
-
-    def _snapshot_path(self) -> str:
-        return f"{self._project_tmp_dir()}/env_snapshot.sh"
-
-    def _capture_env(self, cmd: list[str]) -> dict[str, str]:
-        """Capture short ``env``-style output; parse ``KEY=VALUE`` pairs.
-
-        Uses the adapter's bounded timeout -- fine for the baseline
-        ``env`` snapshot. Long-running captures (sourcing ``env/activate``)
-        go through ``_capture_activated_env`` instead, which streams
-        output live and has no timeout.
-        """
-        result = self._docker.docker_exec_captured(cmd)
-        if result.returncode != 0:
-            msg = (
-                f"Failed to capture container environment (exit {result.returncode}): "
-                f"{result.stderr.strip() or '<no stderr>'}"
-            )
-            raise ContainerError(msg)
-        return self._parse_env_output(result.stdout)
-
-    @staticmethod
-    def _parse_env_output(output: str) -> dict[str, str]:
-        """Parse ``env``-style ``KEY=VALUE`` lines into a dict.
-
-        Lines without ``=`` are skipped. Keys that are not valid shell
-        identifiers are skipped -- prevents activate-script chatter
-        (``Note:``, ``Warning:``, etc.) from leaking into the snapshot as
-        invalid ``export`` statements.
-        """
-        env: dict[str, str] = {}
-        for line in output.splitlines():
-            if "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            if not _VALID_SHELL_NAME.match(key):
-                continue
-            env[key] = value
-        return env
-
-    def _build_snapshot(self, baseline: dict[str, str], activated: dict[str, str]) -> str:
-        lines = [
-            "#!/bin/bash",
-            "# admt environment snapshot -- generated, do not edit",
-            "# Only variables set or modified by env/activate",
-        ]
-        for key, value in activated.items():
-            if baseline.get(key) != value:
-                escaped = value.replace('"', '\\"')
-                lines.append(f'export {key}="{escaped}"')
-        lines.append("")
-        return "\n".join(lines)
-
-    def _build_proxy(self) -> str:
-        return (
-            f'#!/bin/bash\n# Written by admt -- do not edit\nsource {self._snapshot_path()}\n"$@"\n'
-        )
-
-    def _write_container_file(self, path: str, content: str, *, executable: bool = False) -> None:
-        project_dir = self._project_tmp_dir()
-        cmd = ["bash", "-c", f"mkdir -p {project_dir} && cat > {path}"]
-        result = self._docker.docker_exec_with_stdin(cmd, content)
-        if result.returncode != 0:
-            msg = (
-                f"Failed to write '{path}' in container (exit {result.returncode}): "
-                f"{result.stderr.strip() or '<no stderr>'}"
-            )
-            raise ContainerError(msg)
-        if executable:
-            chmod = self._docker.docker_exec_captured(["chmod", "+x", path])
-            if chmod.returncode != 0:
-                msg = f"Failed to chmod '{path}' in container."
-                raise ContainerError(msg)
+        """Container-side path of the snapshot proxy script."""
+        return self._snapshot.proxy_path()
 
     @staticmethod
     def _raise_on_failure(action: str, result: CommandResult) -> None:
