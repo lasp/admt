@@ -21,7 +21,7 @@ from admt.commands.env import (
     EnvStopCommand,
     EnvUseCommand,
 )
-from admt.exceptions import ArgumentError, ConfigError, ContainerError
+from admt.exceptions import ArgumentError, ContainerError
 from admt.services.config import ProjectConfig
 from admt.services.container import ContainerService, ContainerStatus
 
@@ -154,11 +154,11 @@ def test_env_use_switches_active_project(make_context):
     assert result.exit_code == 0
 
 
-def test_env_use_propagates_config_error(make_context):
+def test_env_use_propagates_argument_error(make_context):
     context = make_context()
     msg = "No registered project named 'ghost'"
-    context.config_service.set_active_project.side_effect = ConfigError(msg)
-    with pytest.raises(ConfigError, match="ghost"):
+    context.config_service.set_active_project.side_effect = ArgumentError(msg)
+    with pytest.raises(ArgumentError, match="ghost"):
         EnvUseCommand("ghost").execute(context)
 
 

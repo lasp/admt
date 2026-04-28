@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from admt.exceptions import ConfigError
+from admt.exceptions import ArgumentError, ConfigError
 
 if TYPE_CHECKING:
     from admt.adapters.yaml_adapter import ComposeService, YamlAdapter
@@ -122,12 +122,16 @@ class ConfigService:
         return project
 
     def set_active_project(self, name: str) -> None:
-        """Set ``name`` as the active project; raises if not registered."""
+        """Set ``name`` as the active project; raises if not registered.
+
+        Raises ``ArgumentError`` (exit 3) -- the user passed a bad project
+        name, which is an argument-shape failure, not an environment one.
+        """
         config = self.load()
         if name not in config.projects:
             available = sorted(config.projects)
             msg = f"No registered project named '{name}'. Available: {available}"
-            raise ConfigError(msg)
+            raise ArgumentError(msg)
         config.active_project = name
         self.save(config)
 
@@ -191,7 +195,10 @@ class ConfigService:
                 f"Run 'admt env init' from a directory with default.do, "
                 f"docker/*.yml, and env/activate."
             )
-            raise ConfigError(msg)
+            # ArgumentError (exit 3) -- the path the user passed is the wrong
+            # shape (no project at that location). Distinct from ConfigError
+            # (exit 2), which is for environment/registry failures.
+            raise ArgumentError(msg)
 
     def _select_compose_file(self, project_root: Path) -> Path:
         docker_dir = project_root / "docker"
