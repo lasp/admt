@@ -64,7 +64,15 @@ class ContainerService:
     # ------------------------------------------------------------------
 
     def start(self) -> None:
-        """Bring the container up; auto-pull the image when missing locally."""
+        """Bring the container up; auto-pull the image when missing locally.
+
+        Idempotent: if the container is already running, emit a notice and
+        return without invoking ``docker compose up`` (which would be a
+        ~3s no-op on Docker Desktop for Mac).
+        """
+        if self.is_running():
+            self._output.info(f"Container '{self._project.container_name}' is already running.")
+            return
         image = self._docker.image_name()
         if image and not self._docker.image_exists_locally(image):
             self._output.info(f"Image '{image}' not present locally; pulling...")
@@ -79,7 +87,15 @@ class ContainerService:
         self._output.success(f"Container '{self._project.container_name}' is running.")
 
     def stop(self) -> None:
-        """Stop the container (does not remove it)."""
+        """Stop the container (does not remove it).
+
+        Idempotent: if the container isn't running (stopped or absent),
+        emit a notice and return -- ``docker compose stop`` on a stopped
+        container is a no-op but still costs the compose-plugin overhead.
+        """
+        if not self.is_running():
+            self._output.info(f"Container '{self._project.container_name}' is already stopped.")
+            return
         self._echo_compose("stop")
         self._raise_on_failure("stop", self._docker.compose_stop())
         self._output.success(f"Container '{self._project.container_name}' stopped.")

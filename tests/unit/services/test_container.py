@@ -92,6 +92,7 @@ def test_status_not_found_when_stdout_empty(svc, docker):
 
 
 def test_start_pulls_when_image_missing_and_starts(svc, docker):
+    _prime_not_found(docker)
     docker.image_name.return_value = "img:tag"
     docker.image_exists_locally.return_value = False
     docker.compose_pull.return_value = _ok()
@@ -104,6 +105,7 @@ def test_start_pulls_when_image_missing_and_starts(svc, docker):
 
 
 def test_start_skips_pull_when_image_present(svc, docker):
+    _prime_not_found(docker)
     docker.image_name.return_value = "img:tag"
     docker.image_exists_locally.return_value = True
     docker.compose_up.return_value = _ok()
@@ -113,6 +115,7 @@ def test_start_skips_pull_when_image_present(svc, docker):
 
 
 def test_start_skips_pull_when_service_has_no_image(svc, docker):
+    _prime_not_found(docker)
     docker.image_name.return_value = None
     docker.compose_up.return_value = _ok()
     docker.docker_exec_captured.return_value = _ok()
@@ -121,6 +124,7 @@ def test_start_skips_pull_when_service_has_no_image(svc, docker):
 
 
 def test_start_raises_on_pull_failure(svc, docker):
+    _prime_not_found(docker)
     docker.image_name.return_value = "img:tag"
     docker.image_exists_locally.return_value = False
     docker.compose_pull.return_value = _fail()
@@ -129,25 +133,68 @@ def test_start_raises_on_pull_failure(svc, docker):
 
 
 def test_start_raises_on_up_failure(svc, docker):
+    _prime_not_found(docker)
     docker.image_name.return_value = None
     docker.compose_up.return_value = _fail()
     with pytest.raises(ContainerError, match="up failed"):
         svc.start()
 
 
+def test_start_already_running_short_circuits(docker, capsys):
+    """Idempotent: ``start()`` on a running container emits a notice and returns."""
+    svc = ContainerService(
+        docker=docker,
+        project=_project(),
+        output=OutputService(verbose=False, quiet=False, yes=False, noninteractive=False),
+    )
+    _prime_running(docker)
+    svc.start()
+    docker.compose_up.assert_not_called()
+    docker.compose_pull.assert_not_called()
+    captured = capsys.readouterr()
+    assert "already running" in captured.out
+
+
 def test_stop_delegates_and_raises_on_failure(svc, docker):
+    _prime_running(docker)
     docker.compose_stop.return_value = _fail()
     with pytest.raises(ContainerError, match="stop failed"):
         svc.stop()
 
 
 def test_stop_success(svc, docker):
+    _prime_running(docker)
     docker.compose_stop.return_value = _ok()
     svc.stop()
     docker.compose_stop.assert_called_once()
 
 
-def test_restart_calls_stop_then_start(svc, docker):
+def test_stop_already_stopped_short_circuits(docker, capsys):
+    """Idempotent: ``stop()`` on a stopped/missing container emits a notice and returns."""
+    svc = ContainerService(
+        docker=docker,
+        project=_project(),
+        output=OutputService(verbose=False, quiet=False, yes=False, noninteractive=False),
+    )
+    _prime_not_found(docker)
+    svc.stop()
+    docker.compose_stop.assert_not_called()
+    captured = capsys.readouterr()
+    assert "already stopped" in captured.out
+
+
+def test_restart_calls_stop_then_start(docker):
+    """Restart: stop sees running, then start sees not-running and proceeds."""
+    svc = ContainerService(
+        docker=docker,
+        project=_project(),
+        output=OutputService(verbose=False, quiet=True, yes=False, noninteractive=False),
+    )
+    # First inspect (stop): running. Second inspect (start): not-found.
+    docker.docker_inspect_state.side_effect = [
+        CommandResult(returncode=0, stdout="running\n"),
+        CommandResult(returncode=1, stderr="Error: No such object: myproj_container\n"),
+    ]
     docker.compose_stop.return_value = _ok()
     docker.image_name.return_value = None
     docker.compose_up.return_value = _ok()
@@ -158,6 +205,7 @@ def test_restart_calls_stop_then_start(svc, docker):
 
 
 def test_restart_aborts_on_stop_failure(svc, docker):
+    _prime_running(docker)
     docker.compose_stop.return_value = _fail()
     with pytest.raises(ContainerError):
         svc.restart()
@@ -663,6 +711,7 @@ def test_verbose_echoes_compose_stop_on_stop(docker, capsys):
         project=_project(),
         output=OutputService(verbose=True, quiet=False, yes=False, noninteractive=False),
     )
+    _prime_running(docker)
     docker.compose_stop.return_value = _ok()
     svc.stop()
     captured = capsys.readouterr()

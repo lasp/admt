@@ -126,12 +126,17 @@ class ConfigService:
 
         Raises ``ArgumentError`` (exit 3) -- the user passed a bad project
         name, which is an argument-shape failure, not an environment one.
+
+        Idempotent: if ``name`` is already the active project, no save is
+        performed (avoids the round-trip to disk for a no-op).
         """
         config = self.load()
         if name not in config.projects:
             available = sorted(config.projects)
             msg = f"No registered project named '{name}'. Available: {available}"
             raise ArgumentError(msg)
+        if config.active_project == name:
+            return
         config.active_project = name
         self.save(config)
 

@@ -109,6 +109,43 @@ def test_env_restart_delegates_to_container(registered, mock_container, tmp_path
     mock_container.restart.assert_called_once()
 
 
+# ----- idempotency (TEST_PLAN.md §Idempotency Tests) -----
+
+
+def test_env_start_when_already_running_is_noop(registered, mock_container, tmp_path):
+    """``admt env start`` on an already-running container is exit 0 with notice."""
+    _, runner = registered
+    # ``mock_container.start`` is the unit under spec -- the integration test
+    # only checks that the CLI exits cleanly and delegates exactly once. The
+    # "already running" notice is asserted in the unit-tier test for
+    # ContainerService.start (test_start_already_running_short_circuits).
+    result = runner.invoke(cli, ["env", "start"], env=_env_vars(tmp_path))
+    assert result.exit_code == 0, result.output
+    mock_container.start.assert_called_once()
+
+
+def test_env_stop_when_already_stopped_is_noop(registered, mock_container, tmp_path):
+    """``admt env stop`` on an already-stopped container is exit 0 with notice."""
+    _, runner = registered
+    result = runner.invoke(cli, ["env", "stop"], env=_env_vars(tmp_path))
+    assert result.exit_code == 0, result.output
+    mock_container.stop.assert_called_once()
+
+
+def test_env_use_already_active_is_noop(tmp_path):
+    """``admt env use <already-active>`` is exit 0; no config file rewrite."""
+    root = _make_project(tmp_path)
+    runner = CliRunner()
+    runner.invoke(cli, ["env", "init", str(root)], env=_env_vars(tmp_path))
+    config_path = tmp_path / ".admt" / "config.yml"
+    mtime_before = config_path.stat().st_mtime_ns
+    result = runner.invoke(cli, ["env", "use", "myproj"], env=_env_vars(tmp_path))
+    assert result.exit_code == 0, result.output
+    assert "Active project: myproj" in result.output
+    # No save -> mtime unchanged.
+    assert config_path.stat().st_mtime_ns == mtime_before
+
+
 def test_env_status_prints_state(registered, mock_container, tmp_path):
     _, runner = registered
     mock_container.status.return_value = ContainerStatus.RUNNING
