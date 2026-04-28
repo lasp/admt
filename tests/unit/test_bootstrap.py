@@ -62,16 +62,28 @@ def test_build_context_noninteractive_any_other_value_evaluates_on(monkeypatch, 
     assert ctx.noninteractive is True
 
 
-def test_build_container_service_wires_docker_adapter():
+def test_build_container_service_returns_container_and_mapper_tuple():
+    """Returns (ContainerService, PathMapperService) explicitly.
+
+    Replaces the previous side-effect form where the function mutated
+    ``context.path_mapper`` as a hidden side effect of returning a
+    ContainerService. The caller (``cli._run_command``) now assigns both
+    onto the Context, keeping the population of Context attributes in
+    the CLI adapter where it belongs.
+    """
     fake_ctx = MagicMock()
     fake_ctx.config_service.get_active_project.return_value = _project()
-    container = build_container_service(fake_ctx)
+    container, mapper = build_container_service(fake_ctx)
     assert isinstance(container, ContainerService)
+    assert isinstance(mapper, PathMapperService)
     fake_ctx.config_service.get_active_project.assert_called_once()
 
 
-def test_build_container_service_attaches_path_mapper_to_context():
+def test_build_container_service_does_not_mutate_context():
+    """Regression: confirm the function no longer touches ``context.path_mapper``."""
     fake_ctx = MagicMock()
     fake_ctx.config_service.get_active_project.return_value = _project()
+    # Sentinel: if the function mutated context.path_mapper, this would change.
+    fake_ctx.path_mapper = "untouched-sentinel"
     build_container_service(fake_ctx)
-    assert isinstance(fake_ctx.path_mapper, PathMapperService)
+    assert fake_ctx.path_mapper == "untouched-sentinel"

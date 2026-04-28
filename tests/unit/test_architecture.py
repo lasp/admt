@@ -97,6 +97,87 @@ def test_no_circular_imports():
         importlib.import_module(info.name)
 
 
+# Set of Context attribute names that the CLI adapter populates as part of
+# building the Context for each command. Listing them explicitly (rather than
+# introspecting the dataclass) means a future Context attribute is opt-in --
+# adding a field doesn't silently widen what may be assigned outside cli.py.
+_CONTEXT_FIELDS: frozenset[str] = frozenset(
+    {
+        "config_service",
+        "output",
+        "container_service",
+        "path_mapper",
+        "verbose",
+        "quiet",
+        "debug",
+        "yes",
+        "force",
+        "noninteractive",
+        "target",
+        "path",
+        "run_all",
+    }
+)
+# Files that are allowed to assign to Context attributes. ``cli.py``
+# populates Context fields from parsed CLI args (path/target/run_all);
+# ``bootstrap.py`` was previously a violator and is now compliant -- listed
+# here only for safety in case future wiring legitimately needs to set
+# fields during construction. Any other file mutating Context attributes is
+# the bootstrap-side-effect anti-pattern caught by Q5.
+_CONTEXT_MUTATION_ALLOWLIST: frozenset[str] = frozenset({"cli.py", "context.py"})
+
+
+def _context_attribute_assignments(filepath: Path) -> list[tuple[int, str]]:
+    """Return ``(lineno, attr)`` for every ``<x>.<attr> = ...`` where attr is on Context.
+
+    Detects assignments to names that match Context dataclass fields. Conservative:
+    flags any ``X.attr = ...`` where ``attr`` is in ``_CONTEXT_FIELDS``, regardless
+    of whether ``X`` is statically a Context. False positives are acceptable -- if
+    a non-Context object happens to have the same attribute name, the file should
+    rename it or be added to the allowlist with a justification.
+    """
+    tree = ast.parse(filepath.read_text())
+    hits: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        hits.extend(
+            (node.lineno, target.attr)
+            for target in node.targets
+            if isinstance(target, ast.Attribute) and target.attr in _CONTEXT_FIELDS
+        )
+    return hits
+
+
+def test_only_cli_and_context_assign_to_context_attributes():
+    """Only ``cli.py`` and ``context.py`` may assign to Context attributes.
+
+    Catches the anti-pattern that motivated Q5 in MVP_RETRO.md: a "build a
+    service" function (``bootstrap.build_container_service``) silently
+    mutated ``context.path_mapper`` as a side effect of returning a
+    ContainerService. The function's return-type signature lied about
+    what it did. Any future regression of that pattern (in services/,
+    commands/, adapters/, or bootstrap.py) trips this test.
+
+    ``context.py`` is allowed because ``Context.resolve_container_path``
+    is a method on the dataclass itself; ``cli.py`` is allowed because
+    populating Context from parsed CLI args is the canonical builder
+    pattern (see ``_parse_positional`` and the per-command callbacks).
+    """
+    violations: list[str] = []
+    for py_file in SRC_ROOT.rglob("*.py"):
+        if py_file.name in _CONTEXT_MUTATION_ALLOWLIST:
+            continue
+        for lineno, attr in _context_attribute_assignments(py_file):
+            relative = py_file.relative_to(SRC_ROOT)
+            violations.append(f"{relative}:{lineno}  assigns to context.{attr}")
+    assert not violations, (
+        "Context attributes may only be assigned in cli.py and context.py. "
+        "Other files must not mutate Context as a side effect "
+        "(see Q5 in MVP_RETRO.md):\n  " + "\n  ".join(violations)
+    )
+
+
 def _all_concrete_command_subclasses():
     """Discover concrete Command subclasses, skipping base classes like CPC.
 

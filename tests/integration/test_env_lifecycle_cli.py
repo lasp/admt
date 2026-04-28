@@ -18,6 +18,7 @@ from admt.cli import cli
 from admt.exceptions import ConfigError
 from admt.services.config import ProjectConfig
 from admt.services.container import ContainerService, ContainerStatus
+from admt.services.path_mapper import PathMapperService
 
 DEFAULT_COMPOSE = dedent(
     """\
@@ -81,7 +82,10 @@ def registered(tmp_path):
 def mock_container(monkeypatch):
     """Patch bootstrap.build_container_service so env lifecycle cmds don't need Docker."""
     container = MagicMock(spec=ContainerService)
-    monkeypatch.setattr("admt.cli.build_container_service", lambda _ctx: container)
+    # build_container_service now returns (container, path_mapper) per Q5.
+    # env lifecycle commands don't use the path mapper, so a mock is fine.
+    mapper = MagicMock(spec=PathMapperService)
+    monkeypatch.setattr("admt.cli.build_container_service", lambda _ctx: (container, mapper))
     return container
 
 

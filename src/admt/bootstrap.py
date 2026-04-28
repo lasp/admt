@@ -58,12 +58,17 @@ def build_context(
     )
 
 
-def build_container_service(context: Context) -> ContainerService:
-    """Resolve the active project and wire a ContainerService for it.
+def build_container_service(
+    context: Context,
+) -> tuple[ContainerService, PathMapperService]:
+    """Resolve the active project and build the ContainerService + PathMapper.
 
-    Also attaches a ``PathMapperService`` to ``context.path_mapper`` so
-    passthrough commands can resolve host paths to container paths without
-    another project lookup.
+    Returns both objects as a tuple so the caller (``cli._run_command``)
+    can populate ``context`` explicitly. The previous form mutated
+    ``context.path_mapper`` as a side effect, which made the function's
+    contract surprising: the return-type signature lied about what the
+    function does. Now the contract is "given a context, build these two
+    services" -- caller is responsible for wiring them onto the context.
 
     Raises ``ConfigError`` via ``get_active_project`` when no project is
     configured -- callers should let that propagate so the CLI adapter
@@ -75,5 +80,6 @@ def build_container_service(context: Context) -> ContainerService:
         service_name=project.service_name,
         container_name=project.container_name,
     )
-    context.path_mapper = PathMapperService(project.volume_mounts)
-    return ContainerService(docker=docker, project=project, output=context.output)
+    container = ContainerService(docker=docker, project=project, output=context.output)
+    path_mapper = PathMapperService(project.volume_mounts)
+    return container, path_mapper

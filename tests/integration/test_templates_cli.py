@@ -79,8 +79,7 @@ def mock_container(monkeypatch):
 
     def fake_build(ctx):
         project = ctx.config_service.get_active_project()
-        ctx.path_mapper = PathMapperService(project.volume_mounts)
-        return container
+        return container, PathMapperService(project.volume_mounts)
 
     monkeypatch.setattr("admt.cli.build_container_service", fake_build)
     return container

@@ -68,19 +68,20 @@ def registered(tmp_path):
 
 @pytest.fixture
 def mock_container(monkeypatch):
-    """Replace bootstrap.build_container_service with a mock that still wires path_mapper.
+    """Replace bootstrap.build_container_service with a mock returning real PathMapper.
 
-    The real bootstrap attaches a PathMapperService to ``context`` so
-    passthrough commands can resolve host paths. The mock mirrors that so
-    ``Context.resolve_container_path`` works in tests.
+    Per Q5, build_container_service now returns ``(container, mapper)``
+    rather than mutating ``context.path_mapper`` as a side effect. The
+    fake_build constructs a real PathMapperService against the active
+    project's volume_mounts so ``Context.resolve_container_path`` works
+    end-to-end in the integration tests.
     """
     container = MagicMock(spec=ContainerService)
     container.exec.return_value = 0
 
     def fake_build(ctx):
         project = ctx.config_service.get_active_project()
-        ctx.path_mapper = PathMapperService(project.volume_mounts)
-        return container
+        return container, PathMapperService(project.volume_mounts)
 
     monkeypatch.setattr("admt.cli.build_container_service", fake_build)
     return container
