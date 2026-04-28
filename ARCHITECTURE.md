@@ -762,14 +762,19 @@ class ProveCommand(ContainerPassthroughCommand):
    Note: --force skips the confirmation prompt but still creates the backup.
 4. If yes:
    a. Back up existing implementation files to /tmp/admt-backup-XXXX/
+      (via tempfile.mkdtemp, which lands in /tmp on Linux/macOS)
    b. Print backup location so user can restore if needed
    c. Copy generated stubs from build/template/ to source directory
-   d. Record backup path in /tmp/admt-backup-latest (a plain text file
+   d. Record backup path in ~/.admt/backup-latest (plain text file
       containing the absolute path to the backup directory)
 5. Return Result listing files copied and backup location
 ```
 
-**`admt templates --undo`:** Restores files from the most recent backup created by `admt templates`. Reads the backup path from `/tmp/admt-backup-latest`. If no backup exists, admt exits with an error. Only the most recent backup is restorable (no history stack).
+The marker (`~/.admt/backup-latest`) is intentionally split from the backup directory itself (`/tmp/admt-backup-XXXX/`):
+- The **marker** lives under `~/.admt/` so it survives reboots -- a user who runs `admt templates`, reboots their machine, and then runs `admt templates --undo` shouldn't be silently denied because their pointer file got swept by `/tmp` cleanup.
+- The **backup directory** lives under `/tmp` (via `tempfile.mkdtemp`) and may be cleared on reboot. When the marker points to a missing directory, `--undo` errors clearly ("Backup directory ... is missing") rather than silently restoring nothing.
+
+**`admt templates --undo`:** Restores files from the most recent backup created by `admt templates`. Reads the backup path from `~/.admt/backup-latest`. If no marker exists, or the marker points to a missing directory, admt exits with a clear error. Only the most recent backup is restorable (no history stack).
 
 ---
 
