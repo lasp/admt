@@ -165,17 +165,20 @@ Wrap external tools and libraries (Docker, pykwalify, redo, ruamel.yaml) behind 
 src/
   admt/
     __init__.py
-    main.py                    # Entry point
+    main.py                    # Entry point + SIGINT handler
     cli.py                     # Click adapter -- thin, no logic
+    cli_utils.py               # AliasedGroup (Click subclass with aliases)
+    bootstrap.py               # Service wiring (Context + ContainerService)
     context.py                 # Context and Result classes
     exceptions.py              # All admt-specific exceptions
 
     commands/                  # One file per command or command group
       __init__.py              # Command registry, discovery
-      base.py                  # Command base class
+      base.py                  # Command + ContainerPassthroughCommand bases
       build.py                 # admt build
       test_cmd.py              # admt test (avoid shadowing pytest)
       style.py                 # admt style
+      analyze.py               # admt analyze
       clean.py                 # admt clean
       prove.py                 # admt prove
       coverage.py              # admt coverage
@@ -186,7 +189,8 @@ src/
 
     services/                  # Shared capabilities
       __init__.py
-      container.py             # Container detection, lifecycle, exec
+      container.py             # Container lifecycle + exec + recovery
+      env_snapshot.py          # /tmp/admt/<project>/ snapshot proxy
       config.py                # Project registry, active project, ~/.admt/
       path_mapper.py           # Host <-> container path mapping
       output.py                # Structured output formatting
@@ -195,8 +199,9 @@ src/
 
     adapters/                  # External system wrappers
       __init__.py
-      docker.py                # Docker / docker compose interaction
-      redo.py                  # Redo build system interaction
+      docker.py                # docker / docker compose interaction
+      redo.py                  # redo command-string builder
+      redo_output.py           # Rewrite redo output into admt vocabulary
       yaml_adapter.py          # YAML reading/writing (ruamel.yaml)
       pykwalify_adapter.py     # Schema validation (post-MVP)
 
@@ -205,12 +210,19 @@ tests/
     commands/
     services/
     adapters/
+    test_architecture.py       # Layer rules + Context-mutation lint
   integration/                 # Shell calls to admt CLI
-  container/                   # Full pipeline against real container
+  container/                   # Full pipeline against real container (post-MVP)
   conftest.py                  # Shared fixtures
 
 pyproject.toml
 ```
+
+A few notes on the layout:
+
+- **`bootstrap.py` and `cli_utils.py`** live outside `cli.py` so the architectural cap on CLI callback length (15 lines per function body, enforced by `tests/unit/test_architecture.py::test_cli_functions_are_short`) is not strained by service instantiation or `AliasedGroup` machinery. `cli.py` imports from them and stays a thin adapter.
+- **`adapters/redo_output.py`** is the line-rewriter described in [§Output Rewriting](#output-rewriting). It legitimately belongs in `adapters/` (it translates output from an external tool); pulling it into `services/` would force a service to depend on string-rewrite plumbing that is fundamentally about how redo formats lines.
+- **`services/env_snapshot.py`** holds the `/tmp/admt/<project>/` snapshot machinery (capture baseline + activated env, diff, write `env_snapshot.sh` + `exec.sh`). Split out from `container.py` because env-parsing, shell-quote escaping, and container-side file paths are an orthogonal concern from lifecycle and exec/recovery.
 
 ---
 
