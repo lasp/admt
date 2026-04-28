@@ -53,7 +53,7 @@ admt adds value through orchestration, context detection, output formatting, and
 
 ### R4. Host-Only, Container-Forwarding
 
-admt runs on the host machine only. It is never executed inside the Adamant container. Commands that need the container (build, test, style, etc.) transparently forward to the container via `docker compose exec`. Commands that do not (future: create, validate) run directly on the host. admt fails with a clear, actionable error when a container-required command cannot reach the container.
+admt runs on the host machine only. It is never executed inside the Adamant container. Commands that need the container (build, test, style, etc.) transparently forward to the container via `docker exec` (or `docker compose <subcommand>` for lifecycle ops -- see §"Compose vs. plain Docker"). Commands that do not (future: create, validate) run directly on the host. admt fails with a clear, actionable error when a container-required command cannot reach the container.
 
 ### R5. Non-Interactive Parity
 
@@ -430,6 +430,17 @@ No project configured. Run 'admt env init' to set up a project.
 
 This is the core mechanism for MVP. All build-related commands (`build`, `test`, `style`, `what`, `clean`, `prove`, `coverage`, `publish`, `templates`) work the same way:
 
+### Compose vs. plain Docker
+
+admt uses two distinct families of Docker invocations, picked deliberately:
+
+- **`docker compose -f <compose_file> <subcommand>`** for **lifecycle ops** that need the compose file: `up`, `stop`, `down`, `build`, `push`, `pull`. These define volumes, env, and the service graph; the compose plugin is the right tool. One-shot, user-initiated calls -- the compose-plugin overhead doesn't matter here.
+- **`docker exec -u user <container_name> ...`** and **`docker inspect <container_name>`** for the **hot path**: status probes, every passthrough exec, and snapshot-script I/O. These target the already-running container directly by name and bypass the compose plugin entirely.
+
+The split is justified by performance. On Docker Desktop for Mac, every `docker compose` invocation eats ~3s parsing the compose file before reaching the daemon. For status probes (every command run does one) and exec (every passthrough does one), that ~3s dominates the round-trip. Plain `docker exec` on the resolved `container_name` is roughly **20x faster**. Lifecycle ops only happen on user request (`admt env start`, `admt env stop`), so the overhead is amortized over a user-perceived "I'm starting the container" moment and doesn't matter.
+
+The `DockerAdapter` exposes both families (`compose_*` vs. `docker_*`) explicitly so the call site picks the right one. `ContainerService` routes lifecycle through `compose_*` and exec/status/snapshot I/O through `docker_*`.
+
 ### Path Mapping
 
 admt maps the host working directory to the container path using the volume mounts from the project config.
@@ -500,10 +511,10 @@ All admt container scripts are stored in a per-project directory: `/tmp/admt/<pr
 
 After the container starts, admt automatically runs the full activation and generates the snapshot so that the first `admt build` is fast.
 
-All exec calls go through the proxy script:
+All exec calls go through the proxy script. Per the §"Compose vs. plain Docker" split above, exec uses **plain `docker exec`** against the resolved container name, not `docker compose exec`:
 
 ```bash
-docker compose -f <compose_file> exec -u user <service> \
+docker exec -u user <container_name> \
     /tmp/admt/<project>/exec.sh bash -c "cd /home/user/adamant/src/components/ccsds_router && redo all"
 ```
 
@@ -577,7 +588,7 @@ redo    build/obj/Linux/...
 
 **How `ContainerService.exec()` reads flags:** `ContainerService.exec(command, context)` receives the full `Context` object. It reads `context.quiet`, `context.verbose`, and `context.debug` to decide how to spawn the subprocess (PIPE vs inherited stdio, whether to echo the command, whether to prepend `DEBUG=1`). The passthrough command itself does not need to configure subprocess behavior -- it just passes Context through.
 
-**`-v` and `-q` are NOT mutually exclusive.** Combining them is valid and useful: `admt -v -q build` prints the underlying `docker compose exec` command being executed but suppresses its output. This is especially helpful for agents that want to see what admt is doing under the hood without being flooded by build output. The combined behavior: verbose echo of commands + quiet capture of their output.
+**`-v` and `-q` are NOT mutually exclusive.** Combining them is valid and useful: `admt -v -q build` prints the underlying `docker exec` command being executed (or `docker compose ...` for lifecycle ops) but suppresses its output. This is especially helpful for agents that want to see what admt is doing under the hood without being flooded by build output. The combined behavior: verbose echo of commands + quiet capture of their output.
 
 **When admt needs to inspect output** (e.g., environment variable capture during snapshot generation): Use `subprocess.PIPE` to capture programmatically. This is the exception, not the default.
 
@@ -997,11 +1008,11 @@ Distinct exit codes allow scripts and agents to branch on failure type without p
 When the user sends SIGINT (Ctrl+C) during a container-forwarded operation:
 
 1. admt catches SIGINT.
-2. admt sends SIGINT to the `docker compose exec` subprocess (best-effort propagation).
-3. admt prints the PID of the `docker compose exec` host process so the user can manually `kill -9` it if needed. Obtaining the PID of the process *inside* the container is non-trivial; for MVP, the host-side PID is sufficient.
+2. admt sends SIGINT to the in-flight `docker exec` (or `docker compose ...`) subprocess (best-effort propagation).
+3. admt prints the PIDs of any in-flight subprocesses so the user can manually `kill -9` them if needed. Obtaining the PID of the process *inside* the container is non-trivial; for MVP, the host-side PID is sufficient.
 4. admt exits with code 130.
 
-This is best-effort for MVP. The `docker compose exec` subprocess receives the signal, but the process inside the container (e.g., redo) may survive if `docker compose exec` simply disconnects. Printing the PID gives the user a fallback.
+This is best-effort for MVP. The host-side `docker` subprocess receives the signal, but the process inside the container (e.g., redo) may survive if `docker exec` simply disconnects. Printing the PID gives the user a fallback.
 
 ---
 
@@ -1064,7 +1075,7 @@ This enables Adamant's redo-level debug output for diagnosing build system issue
 
 ```bash
 admt env exec "cd src/components/foo && redo test"
-# Runs: docker compose exec ... /tmp/admt/<project>/exec.sh bash -c "cd src/components/foo && redo test"
+# Runs: docker exec -u user <container_name> /tmp/admt/<project>/exec.sh bash -c "cd src/components/foo && redo test"
 ```
 
 ### `admt env login`
@@ -1072,7 +1083,7 @@ admt env exec "cd src/components/foo && redo test"
 `admt env login` does **not** go through the proxy script. It runs a bare interactive bash shell:
 
 ```bash
-# Runs: docker compose exec -it -u user <service> /bin/bash
+# Runs: docker exec -it -u user <container_name> /bin/bash
 ```
 
 The container's `.bashrc` already sources `env/activate` (or the cached snapshot), so the environment is activated automatically when bash starts. This matches the current `adamant_env.sh login` behavior.
