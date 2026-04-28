@@ -3,6 +3,8 @@
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 from admt.bootstrap import build_container_service, build_context
 from admt.services.config import ProjectConfig
 from admt.services.container import ContainerService
@@ -37,6 +39,27 @@ def test_build_context_noninteractive_false_when_env_unset(monkeypatch):
     monkeypatch.delenv("ADMT_NONINTERACTIVE", raising=False)
     ctx = build_context(verbose=False, quiet=False, debug=False, yes=False, force=False)
     assert ctx.noninteractive is False
+
+
+@pytest.mark.parametrize("value", ["", "0"])
+def test_build_context_noninteractive_zero_or_empty_evaluates_off(monkeypatch, value):
+    """ADMT_NONINTERACTIVE=0 (or empty) is OFF, matching POSIX shell convention.
+
+    Reverses the original "any non-empty value activates" rule; "0" now
+    means explicitly off so users with ``ADMT_NONINTERACTIVE=0`` in their
+    shell init don't trip into agent-mode unintentionally.
+    """
+    monkeypatch.setenv("ADMT_NONINTERACTIVE", value)
+    ctx = build_context(verbose=False, quiet=False, debug=False, yes=False, force=False)
+    assert ctx.noninteractive is False
+
+
+@pytest.mark.parametrize("value", ["1", "true", "yes", "on", "anything", "2"])
+def test_build_context_noninteractive_any_other_value_evaluates_on(monkeypatch, value):
+    """Any non-zero, non-empty ADMT_NONINTERACTIVE value activates the mode."""
+    monkeypatch.setenv("ADMT_NONINTERACTIVE", value)
+    ctx = build_context(verbose=False, quiet=False, debug=False, yes=False, force=False)
+    assert ctx.noninteractive is True
 
 
 def test_build_container_service_wires_docker_adapter():

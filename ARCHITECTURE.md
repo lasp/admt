@@ -947,11 +947,11 @@ admt is **human-first and interactive by default**. When a command needs input, 
 - Designed for experienced humans who know what they want and don't need confirmation
 
 **`ADMT_NONINTERACTIVE` -- for agents and scripts:**
-- Set this environment variable (to any non-empty value) to switch to agent mode
+- Set this environment variable to a truthy value (anything other than `0` or empty) to switch to agent mode
 - **Never prompts.** Uses defaults when available; **errors with a non-zero exit code** when a required argument is missing and has no default
 - The error message tells the caller exactly what flag to provide
 - Designed for CI pipelines, scripts, and AI agents that must never block on stdin
-- Note: setting `ADMT_NONINTERACTIVE=0` still activates the mode (any non-empty value). Use `unset ADMT_NONINTERACTIVE` to disable.
+- **Value semantics:** `unset` and `ADMT_NONINTERACTIVE=0` are off; any other value (`1`, `true`, `yes`, `on`, etc.) is on. Matches POSIX-shell-style boolean conventions so users with `ADMT_NONINTERACTIVE=0` in their shell init don't trip into agent mode unintentionally.
 
 These are **not alternatives** -- they have different semantics:
 

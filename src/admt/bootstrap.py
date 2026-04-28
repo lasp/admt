@@ -29,7 +29,12 @@ def build_context(
     force: bool,
 ) -> Context:
     """Instantiate services and return a fully wired Context."""
-    noninteractive = bool(os.environ.get("ADMT_NONINTERACTIVE"))
+    # ADMT_NONINTERACTIVE: unset or "0" -> off; any other value (e.g., "1",
+    # "true", "yes", "on") -> on. This matches POSIX-shell-style boolean
+    # conventions and lets users with ``ADMT_NONINTERACTIVE=0`` in their
+    # environment treat that as "explicitly off."
+    raw = os.environ.get("ADMT_NONINTERACTIVE", "")
+    noninteractive = raw not in ("", "0")
     output = OutputService(
         verbose=verbose,
         quiet=quiet,
