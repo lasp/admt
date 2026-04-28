@@ -197,15 +197,45 @@ def test_env_rm_declines_without_yes(registered, mock_container, tmp_path):
     mock_container.rm.assert_not_called()
 
 
-def test_env_rm_proceeds_with_yes(registered, mock_container, tmp_path):
+def test_env_rm_yes_alone_does_not_proceed(registered, mock_container, tmp_path):
+    """``--yes`` selects the default of a prompt; default for rm is No.
+
+    The user must pass ``--force`` to skip the prompt for a destructive op.
+    """
     _, runner = registered
-    result = runner.invoke(cli, ["-y", "env", "rm"], env=_env_vars(tmp_path), input="")
-    # --yes has no effect on a prompt with default=False -- it still declines.
-    # Use an explicit y response to proceed.
+    result = runner.invoke(cli, ["-y", "env", "rm"], env=_env_vars(tmp_path), input="\n")
+    assert result.exit_code == 0
+    assert "Aborted" in result.output
+    mock_container.rm.assert_not_called()
+
+
+def test_env_rm_proceeds_with_explicit_y(registered, mock_container, tmp_path):
+    _, runner = registered
     result = runner.invoke(cli, ["env", "rm"], env=_env_vars(tmp_path), input="y\n")
     assert result.exit_code == 0, result.output
     mock_container.rm.assert_called_once_with(
         remove_volumes=False, remove_image=False, remove_all=False
+    )
+
+
+def test_env_rm_with_force_skips_prompt(registered, mock_container, tmp_path):
+    """``--force`` skips the prompt entirely; no stdin is read."""
+    _, runner = registered
+    result = runner.invoke(cli, ["-f", "env", "rm"], env=_env_vars(tmp_path))
+    assert result.exit_code == 0, result.output
+    assert "Aborted" not in result.output
+    mock_container.rm.assert_called_once_with(
+        remove_volumes=False, remove_image=False, remove_all=False
+    )
+
+
+def test_env_rm_with_force_and_remove_all(registered, mock_container, tmp_path):
+    """``--force`` composes with the scope flags and still skips the prompt."""
+    _, runner = registered
+    result = runner.invoke(cli, ["-f", "env", "rm", "--remove-all"], env=_env_vars(tmp_path))
+    assert result.exit_code == 0, result.output
+    mock_container.rm.assert_called_once_with(
+        remove_volumes=False, remove_image=False, remove_all=True
     )
 
 

@@ -311,6 +311,14 @@ def test_env_rm_remove_all_prompt_uses_combined_label(make_context):
     assert "container + volumes + image" in prompt_message
 
 
+def test_env_rm_force_skips_prompt_and_calls_rm(make_context):
+    """``--force`` bypasses the prompt entirely and proceeds with removal."""
+    ctx, container = _ctx_with_container(make_context, force=True)
+    EnvRmCommand(remove_volumes=True).execute(ctx)
+    ctx.output.prompt.assert_not_called()
+    container.rm.assert_called_once_with(remove_volumes=True, remove_image=False, remove_all=False)
+
+
 def test_container_commands_missing_container_service_raises(make_context):
     ctx = make_context()  # no container_service
     with pytest.raises(ContainerError, match="CLI bug"):

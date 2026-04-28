@@ -280,14 +280,21 @@ class EnvRmCommand(Command):
         self._remove_all = remove_all
 
     def execute(self, context: Context) -> Result:
-        """Prompt for confirmation unless ``--yes``, then delegate removal."""
-        project = context.config_service.get_active_project()
-        scope = self._describe_scope()
-        if not context.output.prompt(
-            f"Remove container '{project.container_name}' ({scope})?", default=False
-        ):
-            context.output.info("Aborted.")
-            return Result(exit_code=0)
+        """Prompt for confirmation unless ``--force``, then delegate removal.
+
+        Note on ``--yes`` vs ``--force``: the prompt's default is ``No``
+        (destructive op), and ``--yes`` only auto-accepts the default. So
+        ``--yes`` declines the removal -- the user must either type ``y`` at
+        the prompt or pass ``--force`` to skip the prompt entirely.
+        """
+        if not context.force:
+            project = context.config_service.get_active_project()
+            scope = self._describe_scope()
+            if not context.output.prompt(
+                f"Remove container '{project.container_name}' ({scope})?", default=False
+            ):
+                context.output.info("Aborted.")
+                return Result(exit_code=0)
         _require_container(context).rm(
             remove_volumes=self._remove_volumes,
             remove_image=self._remove_image,
