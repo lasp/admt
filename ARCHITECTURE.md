@@ -471,16 +471,23 @@ All admt container scripts are stored in a per-project directory: `/tmp/admt/<pr
 
 **First exec (no snapshot exists):**
 
-1. admt captures the environment **before** activation (the container's baseline):
+1. admt captures the environment **before** activation (the container's baseline) via a short bounded exec:
    ```bash
-   docker compose exec -u user <service> bash -c "env" > /tmp/baseline_env
+   docker exec -u user <container_name> env
    ```
-2. admt runs the project's `env/activate` and captures the environment **after**:
+   Output is parsed in Python on the host -- no temp file required.
+2. admt runs the project's `env/activate` with **stdio inherited** so the user sees the script's progress live (first-run activation can take many minutes -- pip installs, alr builds, gprbuild of the Pico runtime; running it through a captured pipe would look like a hang). The final `env` dump is redirected to a container-side file so it doesn't flood the user's terminal:
    ```bash
-   docker compose exec -u user <service> bash -c \
-       "source /home/user/<project>/env/activate && env" > /tmp/activated_env
+   docker exec -u user <container_name> bash -c \
+       "mkdir -p /tmp/admt/<project> && \
+        source /home/user/<project>/env/activate && \
+        env > /tmp/admt/<project>/env_activated"
    ```
-3. admt diffs the two captures on the host and writes **only the changed/added variables** as a flat export script. The diff algorithm: parse each capture as key-value pairs (split on first `=`). For each key in the activated set, if the key is absent from the baseline or has a different value, include it in the snapshot. Variables removed by activation are ignored (this is rare and not worth the complexity). The entire new value is stored (e.g., the full `PATH`, not a delta). The resulting script is written to `/tmp/admt/<project>/env_snapshot.sh` in the container via `docker compose exec ... bash -c "mkdir -p /tmp/admt/<project> && cat > /tmp/admt/<project>/env_snapshot.sh << 'ADMT_EOF'\n...\nADMT_EOF"`. Example content:
+   admt then reads the dump back via a short bounded `cat`:
+   ```bash
+   docker exec -u user <container_name> cat /tmp/admt/<project>/env_activated
+   ```
+3. admt diffs the two captures in Python and writes **only the changed/added variables** as a flat export script. The diff algorithm: parse each capture as key-value pairs (split on first `=`); skip lines whose key is not a valid POSIX shell identifier (filters activate-script chatter like `Note:` from leaking in as invalid `export`s). For each key in the activated set, if the key is absent from the baseline or has a different value, include it in the snapshot. Variables removed by activation are ignored (rare; not worth the complexity). The entire new value is stored (e.g., the full `PATH`, not a delta). Embedded `"` characters are backslash-escaped so the resulting `export KEY="..."` line is valid bash. The resulting script is written to `/tmp/admt/<project>/env_snapshot.sh` in the container via `docker_exec_with_stdin` (pipes the script content into a `bash -c "mkdir -p /tmp/admt/<project> && cat > .../env_snapshot.sh"`). Example content:
    ```bash
    #!/bin/bash
    # admt environment snapshot -- generated, do not edit
@@ -490,7 +497,7 @@ All admt container scripts are stored in a per-project directory: `/tmp/admt/<pr
    export ADAMANT_CONFIGURATION_YAML="/home/user/adamant_example/config/adamant_example.configuration.yaml"
    export PATH="/usr/gnat/bin:/home/user/.local/bin:..."
    ```
-4. admt writes a proxy exec script to `/tmp/admt/<project>/exec.sh` in the container (using the same `docker compose exec ... cat >` mechanism):
+4. admt writes a proxy exec script to `/tmp/admt/<project>/exec.sh` in the container (using the same `docker_exec_with_stdin` mechanism):
    ```bash
    #!/bin/bash
    # Written by admt -- do not edit
