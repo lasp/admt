@@ -663,6 +663,7 @@ class Command(ABC):
     name: str                      # e.g., "build", "env start"
     help: str                      # Shown in --help
     requires_project: bool         # Must there be an active project configured?
+    requires_container: bool = False  # Set True for commands that need ContainerService
 
     @abstractmethod
     def execute(self, context: Context) -> Result:
@@ -674,7 +675,7 @@ Note: `Result` does not carry `stdout`/`stderr` strings. For passthrough command
 
 The `Context` object carries everything a command might need -- resolved paths, services, configuration, flags (verbose, quiet, yes, force). Commands never reach into global state; everything arrives through the context.
 
-**Note:** There is no `requires_container` flag. Whether a command needs the container is implicit -- commands that need it call `container_service.exec()`, and the container service handles the "is it running?" check, prompt, and auto-start logic at that point. Commands that don't need the container simply never call the service.
+**The `requires_container` flag.** Commands that need a live `ContainerService` set `requires_container = True`. The CLI adapter uses this flag to lazily wire `ContainerService` and `PathMapperService` onto the Context before `execute` runs -- so commands that don't need the container (e.g., `env init`, `env use`, `env list`) skip the wiring entirely and never pay the project-lookup cost. The metadata test in `tests/unit/test_architecture.py` verifies every concrete `Command` subclass declares the flag. Once inside `execute`, the container service still owns the "is it running?" / auto-start logic at exec time -- the flag governs *when* the service is constructed, not *how* it behaves.
 
 ### Why Classes, Not Functions
 
