@@ -66,7 +66,7 @@ This list is also the test plan for whether CI is doing its job. If a future dri
 - **Toolchain pinning** for `uv`, the Python interpreter, the Adamant container image, and any GitHub Actions third-party action versions.
 - **Failure forensics** -- every failure produces an artifact bundle with provenance metadata (commit SHA, run ID, branch, OS) and human-navigable HTML reports.
 
-### Post-MVP (in scope to *describe* here, not for the first PR to land)
+### Post-MVP (in scope to *describe* here, not to land in the initial CI surface)
 
 - **PyPI publishing on release** -- `uv build`, `uv publish`, attestations.
 - **ARM64 verification on release** -- echo the Adamant ecosystem pattern (`test_all_arm64.yml`).
@@ -289,7 +289,17 @@ The workflow's job is therefore short:
 
 ### Configuration Matrix
 
-For the first PR, single-config: `project: standalone`. A follow-up extends to `project: [standalone, multi-repo]` so path-mapping is exercised against multiple bind mounts. The matrix dimension lives on the host script via an env var, not in the workflow YAML, so local rehearsal can pick a config too.
+The container job ships single-config (`project: standalone`) and grows along orthogonal axes that don't pay the per-leg activate cost twice. The matrix dimension lives on the host script via an env var, not in the workflow YAML, so local rehearsal can pick a config too.
+
+**Acceptable matrix axes:**
+
+- `project: [standalone, multi-repo]` -- exercises path-mapping against single-mount and multi-mount Adamant project shapes. Follow-up after standalone is stable.
+- `os: [ubuntu-24.04, macos-14]` -- when admt grows tier-3-relevant macOS coverage. Currently macOS doesn't ship a usable Adamant container; this axis stays single-OS until upstream changes.
+- `adamant_pin: [<current>, <next>]` -- spot-check during an Adamant version rollout to validate forward compatibility without committing the bump.
+
+**Antipattern: per-command matrix.** Decomposing tier 3 into one matrix leg per admt command (`{command: [build, test, style, ...]}`) is the wrong shape: each leg is a fresh runner with a fresh container, paying the full pull + activate cost (5-10 minutes) for ~30 seconds of test work. Per-test rendering already comes from the JUnit + `mikepenz/action-junit-report` path -- splitting commands into matrix legs adds runtime without buying isolation we need.
+
+**Open question -- amortizing activate across legs.** If a future workflow design successfully amortizes container pull / startup / activate across multiple matrix legs (e.g., a self-hosted runner with persistent state, or an outer "setup" job whose container is reused by inner matrix legs), the per-command matrix antipattern relaxes. Implementation will surface clear benefit or detractor; the rule above stands until that exploration lands evidence.
 
 ### Job-Level Configuration
 
@@ -387,7 +397,7 @@ The recipes below cover both. A developer who runs both Docker Desktop and nativ
 
 ### Prerequisites
 
-- `act` 0.2.84+ installed (`pacman -S act` on Manjaro, `brew install act` on macOS, or built from source in `~/cs/act`).
+- `act` 0.2.86+ installed (`pacman -S act` on Manjaro, `brew install act` on macOS, or built from source). Versions before 0.2.86 carry CVEs.
 - A user-level `~/.config/act/actrc` mapping the runner platform:
 
   ```
@@ -461,7 +471,7 @@ A common development scenario: the developer is iterating on admt *and* on a loc
 Because act's `--bind` only mounts the admt workspace, paths outside it are not visible inside the runner by default. To expose the live Adamant tree at the same absolute path on both sides, pass it explicitly via `--container-options`:
 
 ```bash
-ADMT_LOCAL_ADAMANT=/home/me/cs/adamant \
+ADMT_LOCAL_ADAMANT=/path/to/your/adamant \
 DOCKER_HOST="unix:///var/run/docker.sock" \
   act pull_request -j container -W .github/workflows/container.yml --bind \
   --container-options "-v $ADMT_LOCAL_ADAMANT:$ADMT_LOCAL_ADAMANT"
@@ -485,7 +495,7 @@ What happens inside:
 For day-to-day "I'm changing admt and want to verify against my live Adamant" iteration, the simpler form is to skip act entirely:
 
 ```bash
-ADMT_LOCAL_ADAMANT=/home/me/cs/adamant bash tests/container/run.sh
+ADMT_LOCAL_ADAMANT=/path/to/your/adamant bash tests/container/run.sh
 ```
 
 This is what `tests/container/run.sh` is for ([CI5](#ci5-act-rehearsable-where-possible)) -- it always works, it doesn't need act flags, and it shares the same entry point CI uses. The act form above is for verifying the *workflow YAML itself* still drives the right behavior under live-Adamant conditions.
@@ -527,6 +537,26 @@ Documented limits (none of these are bugs in act -- they are first-principles li
 - **`actions/cache@v5`** writes are no-ops under act (act has its own cache server but doesn't persist across `act` invocations the way GitHub's does). Reads succeed but always miss; warm-cache rehearsal is not meaningful locally.
 
 When a developer adds a step that won't run under act, they add a one-line `# act: skip <reason>` or `# act: ok` comment so future readers know whether the skip is by design.
+
+### Alternative act Methods (Tradeoff Space)
+
+The recipes above use `--bind` + automatic socket discovery. That is one point on a tradeoff curve, not the only method. When the default recipe doesn't fit, these alternatives are worth investigating:
+
+- **`--privileged` + DinD runner image** (e.g., `catthehacker/ubuntu:full-latest`). Runs a nested Docker daemon inside the act runner; containers spawned by the workflow are isolated from the host's docker namespace. Heavier setup, more isolation, no host-socket-binding required. Whether the workspace path resolution still works (the bind mount is host-runner; the nested dockerd's mount source is the runner's filesystem) needs empirical verification before committing.
+
+- **`--reuse` (`-r`)**. Keeps the runner container alive across `act` invocations. Preserves `/tmp/admt/<project>/` snapshot between runs, eliminating the cold-activate cost on subsequent local iterations. Significant local-iteration win when iterating on a single command's behavior; the next-run startup drops from minutes to seconds.
+
+- **Pre-built runner image with admt + Adamant baked in.** A custom image extending `catthehacker/ubuntu:act-latest` with admt installed and an Adamant clone (and possibly a pre-activated env snapshot) baked in. Eliminates the pull and activate cost entirely. Maintenance burden in exchange for runtime; appropriate once the team is iterating on tier 3 frequently.
+
+- **`catthehacker/ubuntu:full-latest`** vs `act-latest` vs `latest`. Size/feature tradeoff. `act-latest` (medium, default) covers Python and basic build tools. `full-latest` adds language runtimes admt doesn't need but ships the docker CLI plus more dev tools. `latest` is the slim image; missing Python, breaks the gate immediately.
+
+- **`--artifact-server-path`**. Captures the artifacts each upload-artifact step writes during local rehearsal. Without this flag, the upload-artifact step fails with `Unable to get the ACTIONS_RUNTIME_TOKEN env variable`. Recipe: `act -j gate --artifact-server-path /tmp/act-artifacts -W .github/workflows/gate.yml`. After the run, `/tmp/act-artifacts/<run-id>/<artifact-name>/` contains the same artifact zip the cloud upload would produce.
+
+- **`~/.actrc` merge order**. act reads three actrc files and merges them: XDG (`~/.config/act/actrc`) -> `~/.actrc` -> `./.actrc`. A `--container-daemon-socket` line in any of the three silently overrides per-invocation defaults. When debugging a "why does my command-line flag not take effect" mystery, audit all three locations.
+
+- **`--container-options`** for arbitrary docker-create flags. Already used in [Recipe: container against a *live* local Adamant](#recipe-container-against-a-live-local-adamant) for the volume-mount form. Also accepts `--user $(id -u):$(id -g)` for runner-UID parity, `--tmpfs /tmp` for ephemeral test scratch space, and other docker-run flags as needed.
+
+The first PR sticks with the documented `--bind` recipe. Implementation (or a follow-up) explores these alternatives empirically and updates this section with the verified tradeoffs.
 
 ---
 
@@ -638,13 +668,50 @@ Pin-override mode (e.g., `ADAMANT_REF=main`) clones a *different* Adamant source
 
 `tests/container/conftest.py` exposes session-scoped fixtures that:
 
-- Locate `_workspace/adamant/`. If missing, fail with a clear "run `tests/container/run.sh` first" message (the host script bootstraps; conftest does not).
-- Register the project: `subprocess.run(["admt", "env", "init", "tests/container/_workspace/adamant"])`.
+- Locate the Adamant clone (see [Project Resolution Order](#project-resolution-order) below for the four-mode lookup).
+- Register the project: `subprocess.run(["admt", "env", "init", <path>])`.
 - Start the container: `admt env start`.
-- Yield a `ProjectFixture` dataclass with the project root, container name, and a known-state component path that's safe to build/test/style against.
+- Yield component-scoped fixtures (see [Component Coverage Requirements](#component-coverage-requirements) below).
 - Teardown: `admt env stop` + remove the registration.
 
 The fixture is **session-scoped** so the container starts once per pytest run, not once per test. Tests that mutate state restore it (e.g., a test that changes the active project switches it back).
+
+### Project Resolution Order
+
+The conftest looks for the Adamant project in this order (first match wins):
+
+1. **`ADMT_LOCAL_ADAMANT`** -- developer override pointing at a live local checkout (anywhere on the filesystem). Symlinked into `_workspace/adamant`.
+2. **`ADMT_TIER3_PROJECT`** -- explicit absolute path to a registered admt project root. CI sets this to the freshly cloned, pinned Adamant.
+3. **Pinned clone in `_workspace/adamant/`** -- if `tests/container/_workspace/adamant/` exists with a `.git/` directory, use it. Bootstrapped by `tests/container/run.sh`.
+4. **Active project's Adamant volume mount** -- when none of the above resolve, parse the active project's `docker-compose.yml` for a volume whose target is `/home/user/adamant` and use the resolved host source path. This is the "adjacent siblings" model: a developer with admt and Adamant checked out under a common parent dir, plus an admt-registered downstream project (e.g., a mission FSW repo) gets tier 3 working with no env var setup.
+
+If none resolve to a valid directory, every tier 3 test skips with a clear message rather than fails. The fallback is path-discovered, never hardcoded -- the conftest reads the compose file's volume mounts to find Adamant, so any layout the user adopts (sibling dirs, a workspace dir, an entirely different filesystem location) works as long as the docker-compose.yml is consistent.
+
+The path-discovery code uses `pathlib.Path.resolve()` against the compose file's directory, never strings; system-specific path conventions (XDG, macOS Library paths, Windows drive letters) are absorbed at the OS layer, not hardcoded.
+
+### Component Coverage Requirements
+
+Tier 3 exercises admt against real Adamant components. The component fixtures must collectively satisfy a coverage matrix -- not specific component names, since upstream Adamant renames and reorganizes components. The conftest publishes named fixtures, each backed by a component that satisfies a feature requirement; when upstream renames or removes the chosen component, the fixture skips with a clear message and a contributor bumps the constant to a still-existing component matching the requirement.
+
+The required coverage:
+
+| Feature | Why tier 3 needs it | Fixture name |
+|---|---|---|
+| Passive component | Verifies admt handles the most common component shape end-to-end | `passive_component` |
+| Active component | Active-execution semantics differ; admt's path-mapping must work for both | `active_component` |
+| Component with `test/` directory | `admt test`, `admt coverage`, `admt analyze` need a real test target | `testing_component` |
+| Connectors (multiple) | Component code generation depends on connector resolution | (covered by `passive_component` or `active_component`) |
+| Parameters | `admt build` against a component with parameters exercises parameter-table generation | `parameterized_component` |
+| Commands | Components emitting commands stress the command-router code path | `commanding_component` |
+| Self-contained types (records, arrays, enums) | YAML type-system handling | (covered by any of the above) |
+| Complex handcoded specs | Generation interacts with hand-written `.ads`/`.adb` -- coverage matters when admt's templates command runs | `handcoded_component` |
+| YAML preambles (component metadata) | Preamble parsing is part of the model the templates command must respect | (covered by any of the above) |
+
+A single component may satisfy multiple feature requirements, and a fixture may compose more than one component when needed. The conftest is permitted to back several fixtures with the same underlying component if it satisfies all the relevant features; the goal is feature coverage, not fixture count.
+
+When a component-fixture lookup fails (renamed, removed, or doesn't satisfy the feature), tier 3 tests using that fixture skip with a message naming the missing feature and the previously-chosen component. The fix is to bump the constant, not to make the test resilient -- tier 3 is supposed to fail loudly when the upstream surface drifts.
+
+The actual component-name selection is an implementation detail of `tests/container/conftest.py`. CI_PLAN.md specifies the coverage requirement; the implementation chooses the components.
 
 ### Why Not a Pre-Built Test Project?
 
@@ -658,11 +725,11 @@ Cloning standalone Adamant at a pinned ref keeps tier 3 honest about what it is:
 
 ### Multi-Repo Configuration (Follow-Up)
 
-For the first PR, the matrix is `project: [standalone]`. A follow-up adds `multi-repo`, which tests admt against a layout that mounts more than one repo (e.g., adamant + a stub component repo). The multi-repo fixture clones two repos into `_workspace/` and ships a hand-written compose file that mounts both. Path-mapping bugs that only manifest with multiple bind mounts are caught here.
+Standalone Adamant is the default tier-3 fixture configuration. A `multi-repo` configuration is the planned second matrix leg: it tests admt against a layout that mounts more than one repo (e.g., adamant + a stub component repo). The multi-repo fixture clones two repos into `_workspace/` and ships a hand-written compose file that mounts both. Path-mapping bugs that only manifest with multiple bind mounts are caught here.
 
 ### Eventual: `admt create test-project`
 
-Once the post-MVP `admt create project` lands, the bootstrap can shift to `admt create project tests/container/_workspace/test-project` and the standalone-Adamant clone becomes one of two configs rather than the default. This is forward-looking, not a blocker for the first CI PR.
+Once the post-MVP `admt create project` lands, the bootstrap can shift to `admt create project tests/container/_workspace/test-project` and the standalone-Adamant clone becomes one of two configs rather than the default. This is forward-looking; it does not block the initial CI surface.
 
 ---
 
@@ -959,241 +1026,101 @@ When the post-MVP plugin system lands, plugin authors register `Command` subclas
 
 - A plugin author's CI imports admt's audit fixture and runs it against their own commands.
 
-This is forward-looking; the convention should be considered when designing the plugin system, but the first CI PR does not need to support it.
+This is forward-looking; the convention should be considered when designing the plugin system, but the initial CI surface does not need to support it.
 
 ---
 
 ## Artifacts and Provenance
 
-Every CI run produces a single artifact bundle, themed in admt's signature dark + gold palette, with provenance metadata visible at the top of the unified `index.html`. The bundle answers, in one place, every question a reviewer or AI agent might ask about a run: did the gate pass, was coverage met, did every architectural-coverage and pin-parity audit pass, what exactly was tested (commit, OS, pinned versions), and -- if anything failed -- where to click for detail.
+Every CI run produces two surfaces, each carrying one signal:
 
-The structure deliberately matches the *shape* of the gate, not just its outputs. Coverage and JUnit are necessary; they are not sufficient. The architectural self-audit and the version-pin parity audit each produce a structured table that is more useful as a panel than as a bullet hidden inside JUnit XML, so the bundle gives them dedicated artifacts.
+- **In-PR check view** (auto-rendered by GitHub from JUnit) -- per-test pass/fail, scannable on the PR's "Checks" tab without leaving the browser. Powered by [`mikepenz/action-junit-report@v4`](https://github.com/mikepenz/action-junit-report). One step in each workflow, one POSTed check-run per job.
+- **Downloadable artifact bundle** (uploaded by `actions/upload-artifact@v4`) -- forensic detail when a failure needs more than the check view: themed coverage HTML (per-file line + branch drilldown), raw JUnit XML, raw coverage XML (Cobertura, for codecov-style consumers), and tier-3-only diagnostics (`docker compose logs`, version stamps).
+
+The audit results (self-audit, pin-parity, spec-alignment) are pytest tests; their PASS/FAIL surfaces in the same JUnit-rendered check view as everything else. A reviewer who wants more than "PASS" clicks the test name in the check view and gets the assertion message verbatim from JUnit -- which already names the disagreeing file or missing test for parametrized failures. The custom dashboard renderer is intentionally absent; coverage HTML is the only piece worth owning the rendering of, and the `--extra-css` hook does that without owning anything else.
 
 ### Bundle Layout
 
 ```
 _artifacts/
-  index.html              # dashboard: provenance banner + status panels + audit tables
-  admt-dark.css           # shared theme
-  provenance.json         # machine-readable: commit, run_id, branch, OS, pin manifest
-
-  gate/                   # tier 1 + tier 2 results (everything pytest produced)
-    junit.xml             # raw -- the source of truth that the rendered views below derive from
-    summary.html          # rendered, grouped by test family
-
-  coverage/               # 100% threshold check
-    index.html            # coverage.py's HTML report, themed via --extra-css
-    coverage.xml          # raw
-
-  audits/                 # architectural-health audits, broken out for visibility
-    self-audit.html       # command/service/adapter/alias coverage matrix
-    pin-audit.html        # pin manifest with parity status per consumer
-    spec-alignment.html   # gate command vs TEST_PLAN, run.sh invocation, etc.
+  gate/
+    gate-junit.xml        # tier 1 + tier 2 (all of pytest, including the audits)
+    coverage.xml          # Cobertura, for codecov-style consumers
+    htmlcov/              # coverage.py's HTML report, themed via --extra-css
+      index.html
+      ...
 
   container/              # tier 3 only
-    junit.xml
-    summary.html
-    docker-compose.log
-    docker-inspect.json
+    container-junit.xml
+    versions.txt          # admt --version, ADAMANT_TAG, ADAMANT_REF, image digest
+    container-logs.txt    # docker compose logs (only on failure)
 ```
 
-### Provenance Banner
+Two artifacts uploaded per workflow run (`gate-<sha>`, `container-<sha>`), keyed by `${{ github.run_id }}` so links from PR comments stay stable across re-runs.
 
-The unified `index.html` opens with a banner that names exactly what was tested, where, and when:
+### Provenance
 
-```
-admt CI run
-  commit        <SHORT_SHA>           <full SHA, link to GitHub>
-  branch / PR   <branch or PR#>       <link to ref/PR>
-  workflow      gate (or container)   <link to workflow run>
-  runner OS     ubuntu-24.04          <runner-OS info>
-  started       2026-05-01T12:34:56Z  <timestamp>
-  duration      2m 14s                <elapsed>
-  status        PASS                  <gold checkmark / red X>
-
-  pinned versions
-    uv          0.7.13                <link to .uv-version line>
-    python      3.14                  <link to .python-version>
-    adamant     0.2 (v0.2.0)          <link to _pins.env>     [tier 3 only]
-```
-
-The "pinned versions" block is read from the [Version-Pin Parity Audit](#version-pin-parity-audit)'s `PINS` manifest at render time, so the banner is always consistent with what the audit asserts. If the audit fails (a consumer disagrees with the source), the banner shows the pin in red with the disagreeing file inlined; the dashboard's pin-audit panel below has full detail.
-
-The banner is also rendered as JSON in `provenance.json` for machine consumption (status-badge generator, PR-description bot, future plugin authors comparing their CI run's pin state to admt's).
-
-### Dashboard Panels (in `index.html`)
-
-Below the banner, the dashboard arranges four status panels in a single column. Each panel is a one-glance summary; each links to the detail view in its dedicated artifact directory.
-
-#### Gate panel
-
-The pytest results panel. The four-command gate's per-step outcomes (`ruff format`, `ruff check`, `mypy`) live in GitHub's native workflow run page (the "checks" tab) rather than in the dashboard, because they are workflow steps, not JUnit-emitted test results -- the renderer cannot synthesize them without a separate inputs file. The dashboard reflects what JUnit XML actually contains:
+Provenance ships as a small `versions.txt` artifact in the container job (the gate's provenance is already implicit in the workflow run metadata: commit, ref, run ID, OS). The file is plain text so it lands cleanly in the artifact ZIP and reads at a glance:
 
 ```
-gate                                                 PASS
-  pytest          OK                                 N tests, M skipped, 0 failed
-                                                     -> gate/summary.html
+admt version: 0.2.0
+admt commit: <full SHA>
+adamant pin tag: 0.2
+adamant pin ref: v0.2.0
+adamant image digest: sha256:...
+runner OS: ubuntu-24.04
+uv: 0.11.7
+python: 3.14
+started: 2026-05-01T12:34:56Z
 ```
 
-A failure inlines the first three failure assertions verbatim and links to the JUnit summary for the rest. For ruff/mypy/format outcomes, the panel footer links to the workflow run's checks tab where GitHub surfaces step-level results natively. Reproducing those steps inside the dashboard would require either a step-output bridge (each gate step writes a JSON record the renderer reads) or running the four commands from inside a pytest wrapper. Both add complexity for a feature GitHub already provides; deferred ([Risks, Tradeoffs, and Honest Estimates](#risks-tradeoffs-and-honest-estimates)).
+`versions.txt` is generated by the workflow at the start of the container job (`admt --version`, `cat tests/container/_pins.env`, `docker inspect ghcr.io/lasp/adamant:${ADAMANT_TAG} -f '{{.Id}}'`). The image-digest line lets a future reviewer answer "exactly which Adamant binary did this run test against?" without re-running.
 
-#### Coverage panel
+### Per-test rendering via `mikepenz/action-junit-report@v4`
 
-```
-coverage                                             100.0%
-  line            100.00%                            X/Y lines
-  branch          100.00%                            P/Q branches
-                                                     -> coverage/index.html
-```
+Each workflow's pytest step writes JUnit XML; a follow-up step posts that XML as a check-run via `mikepenz/action-junit-report@v4`. The action is well-supported, requires no theming, and renders directly in GitHub's PR Checks tab.
 
-If coverage drops below 100%, this panel is the loudest -- the cell turns red and lists the top three uncovered modules with line counts. The full report is one click away.
-
-#### Architectural self-audit panel
-
-A compact matrix showing every command/service/adapter/alias/flag and which tiers cover it. The detail view (`audits/self-audit.html`) is a full table; the dashboard cell is a roll-up:
-
-```
-architectural coverage                               every surface tested at the right tier
-  commands        24 of 24 covered at all required tiers
-  services        4 of 4 with unit tests
-  adapters        4 of 4 with unit tests
-  aliases         11 of 11 covered at tier 2 + tier 3
-  global flags    5 of 5 covered at tier 2 + tier 3   (--verbose, --quiet, --debug, --yes, --force)
-  subcmd flags    9 of 9 covered at tier 2 + tier 3   (--all, --undo, --volumes, --image, --remove-all)
-  env-var flags   4 of 4 covered at tier 2 + tier 3   (ADMT_NONINTERACTIVE, =0, ADMT_ENV, NO_COLOR)
-                                                     -> audits/self-audit.html
+```yaml
+- name: Surface per-test results in PR check view
+  if: ${{ always() && !env.ACT }}
+  uses: mikepenz/action-junit-report@<sha>  # v4.x.x
+  with:
+    report_paths: gate-junit.xml
+    detailed_summary: true
+    check_name: "gate (per-test)"
 ```
 
-A failure surfaces the specific gap in the panel: `BuildCommand missing tier-3 test`, `--debug missing tier-3 test`, or `ADMT_NONINTERACTIVE=0 missing tier-2 test`, with a direct link to the JUnit failure node.
+The `!env.ACT` guard skips the API call during local act rehearsal -- act sets `ACT=true` and the API call would either 403 or write a check-run to the wrong place.
 
-#### Pin-parity panel
-
-```
-pin parity                                           5/5 pins consistent
-  uv              .uv-version -> 0.7.13              referenced by 3 consumers
-  python          .python-version -> 3.14            referenced by 3 consumers
-  adamant_tag     _pins.env -> 0.2                   referenced by 2 consumers   [tier 3 only]
-  adamant_ref     _pins.env -> v0.2.0                referenced by 1 consumer    [tier 3 only]
-  third-party actions                                7 of 7 SHA-pinned with version comments
-                                                     -> audits/pin-audit.html
-```
-
-A failure shows the pin in red and inlines the disagreeing consumer (e.g., `gate.yml line 42 embeds uv 0.7.12 != .uv-version (0.7.13)`).
-
-#### Tier-3 panel (only on `container.yml` runs)
-
-```
-tier 3                                               PASS  (35 tests, 0 failed, 0 skipped)
-  env lifecycle    7 tests OK                        -> container/summary.html#env-lifecycle
-  passthrough      11 tests OK
-  templates        4 tests OK
-  failure paths    8 tests OK
-  global flags     12 tests OK
-  aliases          11 tests OK (one per alias)
-  signal handling  1 test OK
-                                                     -> container/summary.html
-```
-
-A failure inlines the failing test's name, the assertion, and the relevant tail of `docker-compose.log`.
-
-### Detail Views
-
-The audit detail pages are themed Jinja2 renderings; each is one HTML file with a single table.
-
-#### `audits/self-audit.html` -- coverage matrix
-
-A wide table covering every audited surface:
-
-| Subject | Layer | Tier 1 | Tier 2 | Tier 3 |
-|---|---|---|---|---|
-| `build` (`BuildCommand`) | command | OK | OK | OK |
-| `env init` (`EnvInitCommand`) | command | OK | OK | n/a (config-only) |
-| `b` (alias for `build`) | alias | -- | OK | OK |
-| `--verbose` | global flag | -- | OK | OK |
-| `--all` (on `test`, `style`, ...) | subcommand flag | -- | OK | OK |
-| `--volumes` (on `env rm`) | subcommand flag | -- | OK | OK |
-| `ADMT_NONINTERACTIVE` | env-var flag | -- | OK | OK |
-| `ADMT_NONINTERACTIVE=0` (off) | env-var flag | -- | OK | OK |
-| `services/config.py` | service | OK | -- | -- |
-| `adapters/docker.py` | adapter | OK | -- | -- |
-| ... | | | | |
-
-Cells are gold-OK on pass, red on fail, gray-`n/a` when the tier doesn't apply (e.g., pure-config commands skip tier 3; flags don't have tier-1 unit tests because they're CLI-layer concerns). Each OK cell links to the test file; each fail cell links to the JUnit failure node. The table sorts by Layer, then by Subject. A toolbar at the top toggles "show failures only" for triage mode and "filter by layer" so the reader can focus on (e.g.) just the flag rows.
-
-#### `audits/pin-audit.html` -- pin manifest with parity
-
-For each pin in the `PINS` manifest:
-
-| Pin | Source file | Source value | Consumer | Local value / match | Status |
-|---|---|---|---|---|---|
-| uv | `.uv-version` | `0.7.13` | `.github/workflows/gate.yml` | references file | OK |
-| uv | `.uv-version` | `0.7.13` | `.github/workflows/container.yml` | references file | OK |
-| uv | `.uv-version` | `0.7.13` | `CLAUDE.md` | mentions file | OK |
-| python | `.python-version` | `3.14` | `pyproject.toml` | `requires-python = ">=3.14"` | OK |
-| ... | | | | | |
-
-Plus a footer block listing third-party action pins by file and line number with their SHA + version comment, and the orphan-tag scan results (which files were scanned and how many `ghcr.io/lasp/adamant:<tag>` references were found outside `_pins.env`).
-
-#### `audits/spec-alignment.html` -- spec-vs-CI alignment
-
-A short page for the spec/CI alignment guards. Two sections:
-
-- **Gate command alignment**: side-by-side diff between the four gate commands in `TEST_PLAN.md` and the corresponding `run:` lines in `gate.yml`, with the `--junitxml=...` and `-m "not container"` extensions called out as expected differences.
-- **Workflow contracts**: each guard from `tests/unit/test_ci_alignment.py` listed with PASS/FAIL (e.g., "container.yml invokes tests/container/run.sh: OK").
-
-This page is small (one screen) but irreplaceable when a contributor wonders "is the workflow actually running the spec'd gate?" -- one click, one glance, an unambiguous yes or no.
-
-### Theme
-
-`tests/ci_assets/admt-dark.css` is a small CSS file (~150 lines) that:
-
-- Sets a dark base palette (`#1a1a1a` background, `#e0e0e0` text).
-- Uses `#CFB87C` (admt's signature gold) as the *accent* color: links, navigation chrome, the `100%` coverage badge, the PASS marker, hover states, the OK cells in audit tables.
-- Keeps content (code lines, test names, failure messages) in the default text color so it stays skimmable.
-- Sets `.failed` and `.uncovered` red to *contrast* with the gold-passing motif, never overlapping in hue.
-- Sets `.na` a desaturated gray so "not applicable" cells (e.g., tier-3 column for pure-config commands) read as neutral, not absent.
-- Embeds via `coverage html --extra-css` for the coverage report; via `<link rel="stylesheet">` in every other artifact HTML.
-
-The theme is shared across the dashboard, the gate/container summaries, the audit pages, and the coverage report. One mental model for the reader, gold accent only on actionable elements.
-
-### Renderer
-
-`tests/ci_assets/render_summary.py` is a Jinja2-based renderer that:
-
-- Reads `gate-junit.xml` and `container-junit.xml` (when present).
-- Reads `coverage.xml` for the percentages.
-- Reads the `PINS` manifest from `tests/unit/test_pin_audit.py` (importing it directly -- the manifest is the source of truth, and the renderer's job is to project it into the UI).
-- Reads provenance from the environment (`GITHUB_SHA`, `GITHUB_RUN_ID`, `GITHUB_REF_NAME`, `RUNNER_OS`); falls back to `git rev-parse HEAD`, `git branch --show-current`, etc. when the GitHub envs are absent (so local rehearsal produces the same layout).
-- Filters `gate-junit.xml`'s test results into three buckets by name prefix:
-  - `test_command_has_*` / `test_alias_has_*` / `test_global_flag_*` / `test_subcommand_flag_*` / `test_env_var_flag_*` / `test_service_has_*` / `test_adapter_has_*` -> the architectural self-audit panel + detail (one row per parametrized item).
-  - `test_pin_*` / `test_no_orphan_*` / `test_third_party_action_*` -> the pin-audit panel + detail.
-  - `test_gate_workflow_*` / `test_container_workflow_*` -> the spec-alignment panel + detail.
-  - Everything else -> the gate panel.
-- Emits `_artifacts/index.html`, `_artifacts/gate/summary.html`, `_artifacts/audits/{self-audit,pin-audit,spec-alignment}.html`, `_artifacts/container/summary.html` (tier 3 only), and `_artifacts/provenance.json`.
-
-The renderer is a single Python file (~250 lines including the Jinja2 templates). No new dev dependencies: `jinja2` is already a transitive dep that the dev group can pull in cleanly; if even that is too much, the renderer can fall back to f-string + `html.escape` (the templates are simple enough). The renderer is deterministic: same junit.xml + same coverage.xml -> byte-identical HTML, so a reviewer can compare two runs by diffing the HTML directly.
-
-### Coverage HTML
+### Themed Coverage HTML
 
 `coverage.py`'s native HTML reporter accepts `--extra-css` and `--title`:
 
-```
+```bash
 uv run coverage html \
   --extra-css tests/ci_assets/admt-dark.css \
   --title "admt coverage @ ${SHORT_SHA}"
 ```
 
-The output lands in `_artifacts/coverage/`. The dashboard's coverage panel links into it for per-file detail.
+`tests/ci_assets/admt-dark.css` is a small CSS file (~100 lines) that:
 
-### Why Not pytest-html?
+- Sets a dark base palette (`#1a1a1a` background, `#e0e0e0` text).
+- Uses `#CFB87C` (admt's signature gold) as the accent color: the `100%` coverage badge, link hover states, the per-file pass markers.
+- Sets uncovered lines and branches red so they contrast cleanly with the gold-pass motif.
 
-`pytest-html` is mature but doesn't fit the bundle's structure. It produces *one* HTML file per pytest run; we need a dashboard that splits results across panels (gate, audits, tier 3) with audit-specific table layouts. Even if pytest-html could be themed to match, its single-page model would force every audit table into a nested collapsible section -- exactly the noise the user wanted to avoid. A 250-line custom renderer with full control over the bundle structure is cheaper than fighting pytest-html's defaults.
+The output lands in `_artifacts/gate/htmlcov/`. After downloading the artifact zip, opening `htmlcov/index.html` in a browser gives per-file line + branch coverage navigation. Coverage HTML is the only piece of the bundle we own enough rendering of to theme; everything else comes from upstream tooling.
 
-The same logic applies to `coverage`'s HTML reporter -- but in that case, coverage's per-file drilldown is genuinely useful and the `--extra-css` hook lets us theme it without owning the rendering. Coverage HTML stays; pytest-html does not get added.
+### Why no custom dashboard
+
+GitHub's per-test check view (driven by `mikepenz/action-junit-report@v4`) already shows what a custom dashboard would: every test, its pass/fail, the assertion message on failure. The audits are designed so that JUnit's failure messages are self-describing -- e.g., `"BuildCommand missing tier-3 test in tests/container/"` -- so the per-test view tells the whole story for any audit row.
+
+Theming the coverage HTML via `--extra-css` is the only place owning the rendering pays back, because coverage's per-file drilldown is genuinely useful and the CSS hook is one parameter. Everything else stands on upstream tooling.
+
+If a future need arises for a unified dashboard consolidating cross-job data the check view cannot show (e.g., comparing two runs side-by-side), a Jinja2 renderer can be added under `tests/ci_assets/` without having to retrofit anything in the workflow.
 
 ### Retention and Naming
 
-Artifact name: `<workflow>-<matrix>-${{ github.run_id }}` (e.g., `gate-ubuntu-24.04-12345678`). Stable enough to link from a PR comment; namespaced enough to not clash. Retention: 14 days (default for `actions/upload-artifact@v7`). Long enough to debug a failed run a few days later; short enough to not balloon storage.
+Artifact name: `<workflow>-<sha>` (e.g., `gate-c0ffee1`). Stable enough to link from a PR comment; the `${{ github.sha }}` namespace prevents clashes across runs. Retention: 14 days (default for `actions/upload-artifact@v4`). Long enough to debug a failed run a few days later; short enough to not balloon storage.
 
 ---
 
@@ -1252,6 +1179,22 @@ CI cannot become a separate spec. Two test modules run as part of the gate and k
 - **`tests/unit/test_pin_audit.py`** -- version-pin parity. Verifies every embedded version reference matches its single source of truth.
 
 The pattern matches the existing `tests/unit/test_architecture.py`: parametrized tier-1 tests, no Docker required, fail loudly with a specific message.
+
+### Tier-3 Spec-Deviation Policy
+
+Tier 3 occasionally surfaces a case where admt's behavior contradicts a `TEST_PLAN.md` "What to Test" or `ARCHITECTURE.md` clause that tier 1+2 didn't catch (because mocks faithfully reproduced the wrong behavior). When this happens, the right path is:
+
+1. **Pin the tier 3 test to current behavior** with a comment naming the spec line and the discrepancy. Use a relaxed assertion (`returncode != 0` plus a substring match on the user-visible message) so the test still provides regression value while the spec/impl decision is open.
+2. **File a follow-up** -- separate PR or issue -- to reconcile spec and impl. The default expected resolution is to *tighten the spec* (impl is most often the surface that drifted); loosening the spec is rare but possible when new information or use-cases surface.
+3. **Tighten the tier 3 assertion** in the follow-up PR once spec and impl agree.
+
+This keeps tier 3 from becoming a test-vs-impl tug-of-war and ensures spec discrepancies surface as explicit decisions rather than as silent test relaxations. The policy lives in TEST_PLAN.md §Regression Policy as the long-term home; this CI plan references it because tier 3 is where the policy fires most often.
+
+### Tier-2 Subprocess Scope
+
+Tier 2's "dual approach" -- CliRunner plus subprocess invocation -- narrows in scope: subprocess form is reserved for packaging-sensitive smokes (entry-point wiring, `[project.scripts]` regression catch), not per-command parity. CliRunner covers per-command behavior at tier 2 because it exercises real CLI parsing, dispatch, and Context wiring while staying fast. Subprocess invocation is slow and adds little signal beyond CliRunner for command-level behavior, so it stays scoped to a small set of packaging smokes -- one or two tests, not one-per-command.
+
+This refinement lives in TEST_PLAN.md §Test Tiers §Tier 2 as the long-term home; this CI plan references it so the audit's tier-2 arm doesn't grow a "every command also has a subprocess test" expectation.
 
 ### Spec/CI Alignment Guards
 
@@ -1530,8 +1473,8 @@ The first CI PR ships gate.yml plus the alignment tests and the self-audit. Tier
 - `tests/ci_assets/admt-dark.css` -- the shared theme.
 - `tests/ci_assets/render_summary.py` -- the unified-index renderer.
 - `tests/unit/test_ci_alignment.py` -- the spec/CI sync tests.
-- `tests/unit/test_pin_audit.py` -- the version-pin parity audit. The `PINS` manifest in PR 1 covers `uv`, `python`, and the third-party-action SHA convention. The Adamant pair (`ADAMANT_TAG`/`ADAMANT_REF`) is added in PR 2 alongside `_pins.env`.
-- `tests/unit/test_command_test_coverage.py` -- the structural self-audit (parametrized over commands/services/adapters/aliases plus the global, subcommand, and env-var flag families). The tier-3 arm of every audit family is conditional: it skips when `tests/container/` is empty, so PR 1 doesn't block on tier-3 tests existing yet. The tier-2 arm runs unconditionally -- existing `tests/integration/` tests already exercise most flags; this PR makes the coverage explicit.
+- `tests/unit/test_pin_audit.py` -- the version-pin parity audit. The initial `PINS` manifest covers `uv`, `python`, and the third-party-action SHA convention; the Adamant pair (`ADAMANT_TAG`/`ADAMANT_REF`) joins the manifest when `_pins.env` lands alongside the container workflow.
+- `tests/unit/test_command_test_coverage.py` -- the structural self-audit (parametrized over commands/services/adapters/aliases plus the global, subcommand, and env-var flag families). The tier-3 arm of every audit family is conditional: it skips when `tests/container/` is empty, so the gate workflow can land before tier-3 tests exist. The tier-2 arm runs unconditionally -- existing `tests/integration/` tests already exercise most flags, and the audit makes the coverage explicit.
 - One CLAUDE.md update: a `## CI` section pointing to this plan and to `act -j gate`.
 - README badge for gate status.
 
@@ -1631,30 +1574,29 @@ This is forward-looking, but the conventions land in this plan now so the post-M
 
 ## Risks, Tradeoffs, and Honest Estimates
 
-This plan is exhaustive by design (admt's culture is "spec the boring stuff" -- agents stay inside specs that are complete enough to stay inside). Exhaustive specs accumulate cost. This section calls out where the plan's reach exceeds its grasp, what's likely to spiral, and what to defer if the first PR's schedule is tight.
+This plan is exhaustive by design (admt's culture is "spec the boring stuff" -- agents stay inside specs that are complete enough to stay inside). Exhaustive specs accumulate cost. This section calls out where the plan's reach exceeds its grasp, what's likely to spiral, and what to defer if implementation scope feels tight.
 
-### Wall-time reality vs. estimate
+### Wall-time reality
 
-The original Appendix B estimates put tier 3 at "~3m median, ~7m cold". After auditing how cloud GHA runs interact with admt's environment activation -- and remembering that ARCHITECTURE.md §Environment Activation explicitly warns that first-run activate "can take many minutes (pip installs, alr builds, gprbuild of the Pico runtime)" -- the realistic numbers are 2-4x higher:
+Tier-3 wall-time estimates need explicit caveats. ARCHITECTURE.md §Environment Activation warns that first-run activate "can take many minutes (pip installs, alr builds, gprbuild of the Pico runtime)." Cloud CI inherits this fully:
 
-- **Cloud GHA runners are fresh per job.** The activate snapshot at `/tmp/admt/<project>/` does not persist across runs unless we cache it explicitly (see [Roadmap §Medium-term](#medium-term)).
+- **Cloud GHA runners are fresh per job.** The activate snapshot at `/tmp/admt/<project>/` does not persist across runs unless cached explicitly (see [Roadmap §Medium-term](#medium-term)).
 - **Image pull on cold cache** is ~2-3 minutes for an Adamant image of typical size; warm with `actions/cache@v5` it's ~10-30 seconds.
-- **Adamant first-run activate** is the dominant cost. Steady-state on cloud is 5-10 minutes per run *until* snapshot caching lands.
-- **Tier 3 test execution itself** (admt commands against the running container) is 2-5 minutes for the suite outlined in PR 2.
+- **Adamant first-run activate** is the dominant cost. Steady-state on cloud is 5-10 minutes per run until snapshot caching lands.
+- **Tier 3 test execution itself** (admt commands against the running container) is 2-5 minutes for the suite covering every command at the audit's required tier.
 
-Sum: realistic tier-3 wall time is 8-15 minutes per run on cloud GHA. Locally with image and snapshot reuse, 3-5 minutes is achievable. The tightened Appendix B numbers reflect this.
+Sum: realistic tier-3 wall time is 8-15 minutes per run on cloud GHA. Locally with image and snapshot reuse, 3-5 minutes is achievable. Appendix B reflects this.
 
-**Action**: bump every `timeout-minutes` for container-touching jobs to 60 (was 30). Plan PR-merge SLAs around the upper end of these ranges. Treat the activate-snapshot caching optimization as a *real* deliverable in the medium-term roadmap, not a nice-to-have.
+**Action**: every `timeout-minutes` for container-touching jobs is set to 60. Merge SLAs plan around the upper end of these ranges. Treat the activate-snapshot caching optimization as a real deliverable in the medium-term roadmap, not a nice-to-have.
 
 ### Items that could spiral if pursued before they're load-bearing
 
-The plan includes several items that read as "good engineering" but whose value scales with codebase size or contributor count, not with the MVP shipping. If the first PR is tight, defer:
+Several items read as "good engineering" but whose value scales with codebase size or contributor count, not with the workflow shipping. If implementation scope feels tight, defer in this order:
 
-- **The unified HTML dashboard renderer (~250 lines).** Coverage HTML and JUnit XML are forensically sufficient. The dashboard is *user experience polish* -- it makes the artifact bundle navigable, but a developer who knows where to click can survive without it. Recommended split: PR 1 ships the gate workflow and audits with raw JUnit + coverage HTML; the renderer ships in a separate PR (call it "PR 2.5") once the first two gates are stable. The CSS, the provenance banner, and the audit detail pages can land incrementally without blocking.
-- **The Gate panel "per-command" granularity.** Now correctly noted as deferred, but worth restating: the four gate commands (ruff format, ruff check, mypy, pytest) live in GitHub's native step view because reproducing them in the dashboard requires either a step-output bridge or a pytest wrapper. Both are real work for a feature GitHub provides. Defer; do not engineer a workaround in PR 1 or PR 2.
-- **`test_no_orphan_adamant_tags`** (the orphan-tag scanner). Walks every text file in the repo. The exclusion list is now broader, but the scanner is still fragile: a docstring example or a doc snippet that mentions `ghcr.io/lasp/adamant:0.1` for historical reasons would false-positive. Recommend a soft mode for the first iteration: emit a warning, not a hard fail, until contributors get used to the rule.
+- **A unified HTML dashboard.** GitHub's check view (driven by `mikepenz/action-junit-report@v4`) plus the themed coverage HTML cover the forensic surface. A unified dashboard with provenance banner and per-audit detail pages is UX polish -- valuable when comparing runs side-by-side or consolidating cross-job data, not necessary for a CI that just needs to gate merges and surface failures. Reappears as a follow-up if a real need arises.
+- **`test_no_orphan_adamant_tags`** (the orphan-tag scanner). Walks every text file in the repo. The exclusion list is broad, but the scanner is fragile: a docstring example or a doc snippet that mentions `ghcr.io/lasp/adamant:0.1` for historical reasons would false-positive. Soft-mode (warn, not fail) is reasonable on first introduction, hardening to fail-mode after a few weeks of false-positive review.
 - **`test_third_party_action_pins_have_sha_and_version_comment`.** Catches a real failure mode (unpinned third-party actions), but Renovate/Dependabot is the tool for the bump-the-SHA-and-the-comment-together job. The audit is paranoia insurance. Cheap to keep, but if it triggers more false-positives than real catches in the first month, drop it.
-- **ARM64 verification** in release.yml. Already correctly marked post-MVP. Worth flagging that QEMU under cloud GHA is *very slow* (15-25 minutes for a representative test subset, per Appendix B). Not free even when "post-MVP". Don't promise it for v0.2.0.
+- **ARM64 verification** in `release.yml`. Marked post-MVP for good reason: QEMU under cloud GHA is very slow (15-25 minutes for a representative test subset; see Appendix B). Not free even when "post-MVP." Treat as advisory until the first arm64 admt user emerges.
 
 ### Assumptions worth verifying before they ship
 
@@ -1677,14 +1619,14 @@ A few places where the plan errs toward more verification than is strictly neede
 - **Tier 3 on every non-draft PR.** This is a deliberate departure from MVP_PLAN.md's "smoke tests on PR merge" wording, on the grounds that the spec-vs-impl drift retros showed merge-time validation is too late. The cost is 8-15 minutes per PR. If the project has many small PRs (docs, typo fixes, dependency bumps), this cost compounds. The mitigation is the draft-PR exemption: keep WIP work in draft until ready for serious review, then flip to "ready" once tier 3 has something to test.
 - **No `[skip ci]` bypass.** The plan rejects skip directives entirely. This is the right default for a 24-command CLI where every command is one PR away from breaking. A future contributor will want a skip for "I changed only README.md" -- the answer is "let CI run; it's 90 seconds".
 
-### Recommended deferrals
+### Recommended deferral order
 
-If PR 1's scope is feeling tight, defer in this order:
+When implementation scope is tight, defer in this order:
 
-1. The unified HTML dashboard renderer (move to PR 2.5 or post-tier-3).
-2. The third-party-action SHA-comment audit (it's nice; not load-bearing).
+1. The unified HTML dashboard renderer.
+2. The third-party-action SHA-comment audit (nice; not load-bearing).
 3. The orphan-tag scanner (or run it in soft mode first).
-4. The plugin-convention prose (forward-looking; safe to thin if it's not informing PR 1's design choices).
+4. The plugin-convention prose (forward-looking; safe to thin if not informing current design choices).
 
 Do **not** defer:
 
