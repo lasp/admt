@@ -22,7 +22,7 @@ from admt.commands.env import (
     EnvUseCommand,
 )
 from admt.exceptions import ArgumentError, ContainerError
-from admt.services.config import ProjectConfig
+from admt.services.config import ActiveSource, ProjectConfig
 from admt.services.container import ContainerService, ContainerStatus
 
 
@@ -164,6 +164,22 @@ def test_env_use_propagates_argument_error(make_context):
         EnvUseCommand("ghost").execute(context)
 
 
+def test_env_use_warns_when_admt_env_overrides(make_context, monkeypatch):
+    """ADMT_ENV outranks the new setting; the user must be told it won't take effect."""
+    monkeypatch.setenv("ADMT_ENV", "elsewhere")
+    context = make_context()
+    EnvUseCommand("other").execute(context)
+    warning_calls = [c.args[0] for c in context.output.warning.call_args_list]
+    assert any("ADMT_ENV=elsewhere" in msg for msg in warning_calls)
+
+
+def test_env_use_no_warning_when_admt_env_matches(make_context, monkeypatch):
+    monkeypatch.setenv("ADMT_ENV", "other")
+    context = make_context()
+    EnvUseCommand("other").execute(context)
+    context.output.warning.assert_not_called()
+
+
 # ----- Command metadata contract -----
 
 
@@ -228,11 +244,22 @@ def test_env_login_propagates_exit_code(make_context):
 def test_env_status_prints_project_and_state(make_context):
     ctx, container = _ctx_with_container(make_context)
     ctx.config_service.get_active_project.return_value = _project_stub("demo")
+    ctx.config_service.get_active_source.return_value = ActiveSource.GLOBAL
     container.status.return_value = ContainerStatus.RUNNING
     EnvStatusCommand().execute(ctx)
     info_lines = [c.args[0] for c in ctx.output.info.call_args_list]
     assert any("Project: demo" in line for line in info_lines)
     assert any("Status: running" in line for line in info_lines)
+
+
+def test_env_status_reports_active_source(make_context):
+    ctx, container = _ctx_with_container(make_context)
+    ctx.config_service.get_active_project.return_value = _project_stub("demo")
+    ctx.config_service.get_active_source.return_value = ActiveSource.SESSION
+    container.status.return_value = ContainerStatus.RUNNING
+    EnvStatusCommand().execute(ctx)
+    info_lines = [c.args[0] for c in ctx.output.info.call_args_list]
+    assert any("Active via: this terminal" in line for line in info_lines)
 
 
 def test_env_build_push_pull_delegate(make_context):
@@ -338,11 +365,14 @@ def test_env_list_empty(make_context):
     assert any("No projects registered" in m for m in messages)
 
 
-def test_env_list_renders_projects_with_active_marker(make_context):
+def test_env_list_marks_per_terminal_active(make_context):
+    """The ``*`` marks what THIS terminal resolves to, not the bare global."""
     ctx = make_context()
     projects = {"alpha": _project_stub("alpha"), "beta": _project_stub("beta")}
     ctx.config_service.list_projects.return_value = projects
-    ctx.config_service.load.return_value.active_project = "beta"
+    # resolved_active_name() reflects per-terminal resolution (e.g. this
+    # terminal's session pins beta even if the global default differs).
+    ctx.config_service.resolved_active_name.return_value = "beta"
     EnvListCommand().execute(ctx)
     lines = [c.args[0] for c in ctx.output.info.call_args_list]
     active_line = next(line for line in lines if "beta" in line)

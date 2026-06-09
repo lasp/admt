@@ -309,9 +309,9 @@ active_project: adamant_example
 projects:
   adamant_example:
     compose_file: /Users/dev/projects/adamant_example/docker/docker-compose.yml
-    compose_file_mtime: 1744646400  # Unix mtime of compose file when config last derived
+    compose_file_mtime: 1744646400123456789  # st_mtime_ns of compose file when config last derived
     env_file: /Users/dev/projects/adamant_example/docker/.env  # colocated .env, if present (else null)
-    env_file_mtime: 1744646400      # Unix mtime of .env when config last derived
+    env_file_mtime: 1744646400123456789      # st_mtime_ns of .env when config last derived
     service_name: adamant_example
     container_name: adamant_example_container  # RESOLVED value (see "Compose Parsing" below)
     project_root: /Users/dev/projects/adamant_example
@@ -347,9 +347,11 @@ Instead, admt derives `name`, `service_name`, `container_name`, and `volume_moun
 
 This invocation runs only at registration, on `env refresh`, and on the first command after the compose file or `.env` changes (see [Config Auto-Update](#config-auto-update)) -- never on the per-command hot path, which reads the cached resolved values from `~/.admt/config.yml`. Because admt shells out to `docker compose config`, the docker CLI must be installed (not necessarily running) for `env init`/`refresh`.
 
+Caveat (Docker semantics, not admt's): variables exported in the calling shell outrank the `.env` file during interpolation. A globally-exported `COMPOSE_PROJECT_NAME` would make every project resolve to that name. admt does not work around this -- the resolved values faithfully reflect what `docker compose up` would actually do in that shell.
+
 ### Config Auto-Update
 
-admt records both `compose_file_mtime` and `env_file_mtime` (the Unix modification timestamps of `docker-compose.yml` and its colocated `.env`, at the time the project config was last derived) in `~/.admt/config.yml` for each project. On every admt command that uses an active project, admt stats both files and compares their current mtimes to the stored values. These two `stat()` calls are the only per-command cost; they are negligible.
+admt records both `compose_file_mtime` and `env_file_mtime` (the **nanosecond** modification timestamps, `st_mtime_ns`, of `docker-compose.yml` and its colocated `.env`, at the time the project config was last derived) in `~/.admt/config.yml` for each project. Nanosecond granularity means two edits within the same second cannot slip past the check. On every admt command that uses an active project, admt stats both files and compares their current mtimes to the stored values; any mismatch triggers a re-derive. These two `stat()` calls are the only per-command cost; they are negligible.
 
 - **If neither file is newer**, admt proceeds normally using the cached resolved values.
 - **If either is newer**, admt re-derives the project via `docker compose config` (see [Compose Parsing](#compose-parsing)), updates the stored `service_name`, `container_name`, `volume_mounts`, `compose_file_mtime`, and `env_file_mtime`, and prints a concise notice to stdout describing the change (e.g., `Updated config: added mount ../../new-repo -> /home/user/new-repo`). admt then continues with the original command.
@@ -455,9 +457,10 @@ Whichever wins, admt then looks up that project's cached config (after the [Conf
 The session store gives admt per-shell memory **without** a shell shim, an `eval`, or any rc-file setup: a normal `admt env use` in one terminal cannot change another terminal's behavior, and a child process cannot export into its parent shell, so admt records the choice itself.
 
 - **Key:** the controlling TTY of the admt process (e.g. `/dev/ttys003`), with the POSIX session id (`getsid`) stored alongside as a staleness guard. Two admt invocations in the same terminal share a TTY; a different terminal window has a different TTY.
-- **Location:** `~/.admt/sessions` (separate from `config.yml`; this is volatile per-terminal state, not project registry).
+- **Location:** `~/.admt/sessions.yml` (separate from `config.yml`; this is volatile per-terminal state, not project registry).
 - **Write:** `admt env use <name>` records `<tty> -> {project: <name>, sid: <getsid>}` and also updates the global `active_project`.
-- **Read:** resolution step 2 looks up the current TTY. The entry is honored only if its stored `sid` still matches the current session id; otherwise the TTY was recycled by a new terminal and the stale entry is ignored (and pruned).
+- **Read:** resolution step 2 looks up the current TTY. The entry is honored only if its stored `sid` still matches the current session id; otherwise the TTY was recycled by a new terminal and the stale entry is ignored (it is dropped on the next session write, which prunes entries whose owning shell has exited). The store is a disposable cache: an unreadable or corrupt `sessions.yml` degrades to "no sessions" rather than failing commands, and a failed pin write (unwritable `~/.admt`, disk full) degrades to a warning -- the terminal then follows the global default. The terminal is identified by probing stdin, then stderr, then stdout for a tty -- so a piped stdin (`echo y | admt ...`) does not lose the terminal's pin.
+- **Lazy auto-pin:** the first time a terminal resolves the active project via the global default (step 3), admt writes a session entry pinning that terminal to the resolved project. **Every resolution path pins** -- `env list`, `env status`, and passthrough commands alike -- because any command that has shown the user which project the terminal is on has made a commitment; the terminal must stay on that project until told otherwise. This snapshots the inherited global into the terminal -- the no-shim equivalent of exporting `ADMT_ENV` at shell startup -- so that a later `env use` in another terminal (which moves the global) cannot change what an already-resolved terminal targets. Without it, an unpinned terminal would keep following every global change, leaking one terminal's `env use` into others. `ADMT_ENV`-sourced resolutions are never persisted (explicit per-invocation overrides stay ephemeral), and a global naming an unregistered project is not pinned. New terminals still inherit the last-used global, then immediately pin themselves.
 - **No controlling TTY** (CI, agents under `ADMT_NONINTERACTIVE`, piped or `xargs` invocations): the session layer is skipped entirely; resolution uses `ADMT_ENV` then global `active_project`. Those contexts should set `ADMT_ENV` explicitly.
 - **Granularity is per-terminal, not per-process:** a subshell or script launched within a terminal inherits that terminal's active project.
 

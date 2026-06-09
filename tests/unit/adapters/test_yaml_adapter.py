@@ -37,3 +37,20 @@ def test_load_raises_for_directory_as_path(adapter, tmp_path):
     (tmp_path / "dir").mkdir()
     with pytest.raises(ConfigError, match="Cannot read YAML file"):
         adapter.load(tmp_path / "dir")
+
+
+def test_load_wraps_parse_errors_as_config_error(adapter, tmp_path):
+    """Malformed YAML must become a clean ConfigError, not a ruamel traceback."""
+    bad = tmp_path / "bad.yml"
+    bad.write_text("{[definitely: not: yaml")
+    with pytest.raises(ConfigError, match="Cannot parse YAML"):
+        adapter.load(bad)
+
+
+def test_dump_wraps_write_errors_as_config_error(adapter, tmp_path):
+    """An unwritable destination must become a clean ConfigError, not OSError."""
+    # A FILE where a parent directory is needed makes mkdir raise OSError.
+    blocker = tmp_path / "blocker"
+    blocker.write_text("")
+    with pytest.raises(ConfigError, match="Cannot write YAML"):
+        adapter.dump({"k": "v"}, blocker / "out.yml")

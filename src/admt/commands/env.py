@@ -100,6 +100,14 @@ class EnvUseCommand(Command):
         """Set the active project and report the new state."""
         context.config_service.set_active_project(self._project_name)
         context.output.info(f"Active project: {self._project_name}")
+        # ADMT_ENV outranks both the session pin and the global default, so an
+        # `env use` in a shell that exports it would silently not take effect.
+        override = os.environ.get("ADMT_ENV")
+        if override and override != self._project_name:
+            context.output.warning(
+                f"ADMT_ENV={override} is set in this shell and overrides the active "
+                f"project for every command. Unset it for this change to take effect here."
+            )
         return Result(exit_code=0)
 
 
@@ -178,7 +186,9 @@ class EnvStatusCommand(Command):
         """Print project name, container name, and status."""
         container = _require_container(context)
         project = context.config_service.get_active_project()
+        source = context.config_service.get_active_source()
         context.output.info(f"Project: {project.name}")
+        context.output.info(f"Active via: {source}")
         context.output.info(f"Container: {project.container_name}")
         context.output.info(f"Status: {container.status().value}")
         return Result(exit_code=0)
@@ -321,12 +331,17 @@ class EnvListCommand(Command):
     requires_project: ClassVar[bool] = False
 
     def execute(self, context: Context) -> Result:
-        """Render ``name  compose_file`` lines; prefix the active project with ``*``."""
+        """Render ``name  compose_file`` lines; prefix the active project with ``*``.
+
+        The ``*`` marks what THIS terminal resolves to (ADMT_ENV / its session /
+        the global default) -- not the bare global -- so the listing matches what
+        ``env status`` and build commands actually target in this terminal.
+        """
         projects = context.config_service.list_projects()
         if not projects:
             context.output.info("No projects registered. Run 'admt env init' to set one up.")
             return Result(exit_code=0)
-        active = context.config_service.load().active_project
+        active = context.config_service.resolved_active_name()
         width = max(len(name) for name in projects)
         for name in sorted(projects):
             marker = "*" if name == active else " "

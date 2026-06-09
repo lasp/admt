@@ -19,7 +19,14 @@ import pytest
 from admt.adapters.docker import ResolvedCompose, ResolvedService, ResolvedVolume
 from admt.adapters.yaml_adapter import YamlAdapter
 from admt.exceptions import ArgumentError, ConfigError
-from admt.services.config import ConfigService, ProjectConfig
+from admt.services import config as config_mod
+from admt.services.config import (
+    ActiveSource,
+    ConfigService,
+    ProjectConfig,
+    _current_terminal,
+    _session_alive,
+)
 from admt.services.output import OutputService
 
 # Placeholder compose content; never parsed (the resolver is faked) but a file
@@ -124,6 +131,14 @@ def _bump_mtime(path: Path) -> None:
     """Advance ``path``'s mtime by a few seconds so stat changes."""
     current = path.stat()
     os.utime(path, (current.st_atime + 10, current.st_mtime + 10))
+
+
+def _registered(tmp_path, *, name="myproj", base=None):
+    """Register a single project and return its ConfigService."""
+    root = _make_project(base if base is not None else tmp_path, name=name)
+    svc = _svc(tmp_path)
+    svc.register_project(root)
+    return svc
 
 
 # ----- load -----
@@ -452,6 +467,67 @@ def test_check_and_refresh_reparses_when_env_file_changes(tmp_path):
     assert svc.load().projects["myproj"].container_name == "myproj-wt9_container"
 
 
+def test_check_and_refresh_reports_resolved_name_change(tmp_path, capsys):
+    """A .env-driven rename is reported; the registry key intentionally stays."""
+    root = _make_project(tmp_path)
+    rroot = root.resolve(strict=False)
+    resolver = _StubResolver(_default_resolver(root / "docker" / "docker-compose.yml"))
+    svc = _svc(tmp_path, resolver)
+    svc.register_project(root)
+    capsys.readouterr()
+    resolver.result = _compose(
+        "myproj-renamed",
+        [
+            _service(
+                "myproj",
+                container_name="myproj_container",
+                mounts=[
+                    (tmp_path / "adamant", "/home/user/adamant"),
+                    (rroot, "/home/user/myproj"),
+                ],
+            )
+        ],
+    )
+    _bump_mtime(root / "docker" / "docker-compose.yml")
+    svc.check_and_refresh_project("myproj")
+    out = capsys.readouterr().out
+    assert "resolved project name myproj -> myproj-renamed" in out
+    assert "still registered as 'myproj'" in out
+    # Registry key unchanged; pins keep working.
+    assert "myproj" in svc.list_projects()
+
+
+def test_check_and_refresh_detects_same_second_env_edit(tmp_path):
+    """An edit within the same second as the last derive is still detected.
+
+    Staleness compares st_mtime_ns; a 1ns bump must trigger a re-derive.
+    """
+    root = _make_project(tmp_path)
+    rroot = root.resolve(strict=False)
+    env_path = root / "docker" / ".env"
+    env_path.write_text("COMPOSE_PROJECT_NAME=myproj\n")
+    resolver = _StubResolver(_default_resolver(root / "docker" / "docker-compose.yml"))
+    svc = _svc(tmp_path, resolver)
+    svc.register_project(root)
+    resolver.result = _compose(
+        "myproj",
+        [
+            _service(
+                "myproj",
+                container_name="myproj-ns_container",
+                mounts=[
+                    (tmp_path / "adamant", "/home/user/adamant"),
+                    (rroot, "/home/user/myproj"),
+                ],
+            )
+        ],
+    )
+    stat = env_path.stat()
+    os.utime(env_path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1))  # same second
+    svc.check_and_refresh_project("myproj")
+    assert svc.load().projects["myproj"].container_name == "myproj-ns_container"
+
+
 def test_check_and_refresh_detects_env_file_removed(tmp_path):
     """A .env present at registration but later removed counts as a change."""
     root = _make_project(tmp_path)
@@ -585,6 +661,15 @@ def test_deserialize_corrupt_yaml_raises(tmp_path):
         _svc(tmp_path).load()
 
 
+def test_unparseable_config_yaml_raises_clean_config_error(tmp_path):
+    """Malformed config.yml surfaces as ConfigError (exit 2), not a ruamel traceback."""
+    config_dir = tmp_path / ".admt"
+    config_dir.mkdir()
+    (config_dir / "config.yml").write_text("{[not yaml")
+    with pytest.raises(ConfigError, match="Cannot parse YAML"):
+        _svc(tmp_path).load()
+
+
 def test_deserialize_project_missing_key_raises(tmp_path):
     config_dir = tmp_path / ".admt"
     config_dir.mkdir()
@@ -601,6 +686,39 @@ def test_deserialize_project_missing_key_raises(tmp_path):
     )
     with pytest.raises(ConfigError, match="missing key"):
         _svc(tmp_path).load()
+
+
+def test_deserialize_config_missing_env_fields(tmp_path):
+    """A config entry lacking env_file/env_file_mtime loads with safe defaults.
+
+    These keys are optional; a load failure here would break every command
+    for a user whose config does not carry them.
+    """
+    config_dir = tmp_path / ".admt"
+    config_dir.mkdir()
+    (config_dir / "config.yml").write_text(
+        dedent(
+            """\
+            version: 1
+            active_project: legacy
+            projects:
+              legacy:
+                compose_file: /sim/legacy/docker/docker-compose.yml
+                compose_file_mtime: 100
+                service_name: legacy
+                container_name: legacy_container
+                project_root: /sim/legacy
+                container_home: /home/user
+                volume_mounts:
+                  /sim/legacy: /home/user/legacy
+                activate_script: /home/user/legacy/env/activate
+            """
+        )
+    )
+    project = _svc(tmp_path).load().projects["legacy"]
+    assert project.env_file is None
+    assert project.env_file_mtime == 0
+    assert project.container_name == "legacy_container"
 
 
 def test_deserialize_non_mapping_project_entry_raises(tmp_path):
@@ -631,3 +749,415 @@ def test_round_trip_save_and_load_preserves_env_fields(tmp_path):
     assert original.activate_script == reloaded.activate_script
     assert reloaded.env_file == original.env_file
     assert reloaded.env_file_mtime == original.env_file_mtime
+
+
+# ----- _current_terminal -----
+
+
+def test_current_terminal_returns_tty_and_sid(monkeypatch):
+    monkeypatch.setattr(os, "isatty", lambda _fd: True)
+    monkeypatch.setattr(os, "ttyname", lambda _fd: "/dev/ttys009")
+    monkeypatch.setattr(os, "getsid", lambda _pid: 4242)
+    assert _current_terminal() == ("/dev/ttys009", 4242)
+
+
+def test_current_terminal_not_a_tty_returns_none(monkeypatch):
+    monkeypatch.setattr(os, "isatty", lambda _fd: False)
+    assert _current_terminal() is None
+
+
+def test_current_terminal_oserror_returns_none(monkeypatch):
+    def _raise(_fd):
+        raise OSError
+
+    monkeypatch.setattr(os, "isatty", lambda _fd: True)
+    monkeypatch.setattr(os, "ttyname", _raise)
+    assert _current_terminal() is None
+
+
+def test_current_terminal_non_posix_returns_none(monkeypatch):
+    # Platforms without os.getsid (e.g. Windows) disable the session layer.
+    monkeypatch.delattr(os, "getsid", raising=False)
+    assert _current_terminal() is None
+
+
+_STDERR_FD = 2
+_STDOUT_FD = 1
+
+
+def test_current_terminal_falls_back_to_stderr_when_stdin_piped(monkeypatch):
+    """`echo y | admt ...` must not lose the terminal: stderr is still the tty."""
+    monkeypatch.setattr(os, "isatty", lambda fd: fd == _STDERR_FD)
+    monkeypatch.setattr(os, "ttyname", lambda fd: f"/dev/ttys{fd}")
+    monkeypatch.setattr(os, "getsid", lambda _pid: 5)
+    assert _current_terminal() == ("/dev/ttys2", 5)
+
+
+def test_current_terminal_falls_back_to_stdout_last(monkeypatch):
+    monkeypatch.setattr(os, "isatty", lambda fd: fd == _STDOUT_FD)
+    monkeypatch.setattr(os, "ttyname", lambda fd: f"/dev/ttys{fd}")
+    monkeypatch.setattr(os, "getsid", lambda _pid: 5)
+    assert _current_terminal() == ("/dev/ttys1", 5)
+
+
+# ----- session-based active project resolution -----
+
+
+def _two_projects(tmp_path):
+    """Register proja then projb (projb becomes the global default)."""
+    svc = _registered(tmp_path, name="proja")
+    alt = tmp_path / "b"
+    alt.mkdir()
+    svc.register_project(_make_project(alt, name="projb"))
+    return svc
+
+
+def test_session_overrides_global(tmp_path, monkeypatch):
+    svc = _two_projects(tmp_path)
+    monkeypatch.delenv("ADMT_ENV", raising=False)
+    monkeypatch.setattr(config_mod, "_current_terminal", lambda: ("/dev/ttysA", 7))
+    svc._write_session("proja")
+    assert svc.load().active_project == "projb"  # global unchanged
+    assert svc.get_active_source() == ActiveSource.SESSION
+    assert svc.get_active_project().name == "proja"
+
+
+def test_admt_env_overrides_session(tmp_path, monkeypatch):
+    svc = _two_projects(tmp_path)
+    monkeypatch.setattr(config_mod, "_current_terminal", lambda: ("/dev/ttysA", 7))
+    svc._write_session("proja")
+    monkeypatch.setenv("ADMT_ENV", "projb")
+    assert svc.get_active_source() == ActiveSource.ENV_OVERRIDE
+    assert svc.get_active_project().name == "projb"
+
+
+def test_global_source_when_no_session_and_no_env(tmp_path, monkeypatch):
+    svc = _registered(tmp_path)
+    monkeypatch.delenv("ADMT_ENV", raising=False)
+    monkeypatch.setattr(config_mod, "_current_terminal", lambda: None)
+    assert svc.get_active_source() == ActiveSource.GLOBAL
+
+
+def test_resolved_active_name_reflects_precedence(tmp_path, monkeypatch):
+    monkeypatch.delenv("ADMT_ENV", raising=False)
+    svc = _registered(tmp_path)  # global = myproj
+    monkeypatch.setattr(config_mod, "_current_terminal", lambda: None)
+    assert svc.resolved_active_name() == "myproj"
+    # ADMT_ENV wins; resolved_active_name is raw (no registration validation).
+    monkeypatch.setenv("ADMT_ENV", "ghost")
+    assert svc.resolved_active_name() == "ghost"
+
+
+def test_resolved_active_name_none_when_unconfigured(tmp_path, monkeypatch):
+    monkeypatch.delenv("ADMT_ENV", raising=False)
+    monkeypatch.setattr(config_mod, "_current_terminal", lambda: None)
+    assert _svc(tmp_path).resolved_active_name() is None
+
+
+def test_resolved_active_name_pins_terminal_on_global_resolution(tmp_path, monkeypatch):
+    """Any resolution pins -- including the env-list path (resolved_active_name)."""
+    monkeypatch.delenv("ADMT_ENV", raising=False)
+    svc = _registered(tmp_path)  # global = myproj
+    monkeypatch.setattr(config_mod, "_current_terminal", lambda: ("/dev/ttysL", 31))
+    assert svc.resolved_active_name() == "myproj"
+    assert svc._load_sessions().get("/dev/ttysL", {}).get("project") == "myproj"
+
+
+def test_resolved_active_name_does_not_pin_admt_env_override(tmp_path, monkeypatch):
+    """ADMT_ENV resolutions are ephemeral -- never persisted as a pin."""
+    svc = _registered(tmp_path)
+    monkeypatch.setattr(config_mod, "_current_terminal", lambda: ("/dev/ttysL", 31))
+    monkeypatch.setenv("ADMT_ENV", "ghost")
+    assert svc.resolved_active_name() == "ghost"
+    assert not (tmp_path / ".admt" / "sessions.yml").exists()
+
+
+def test_resolved_active_name_does_not_pin_unregistered_global(tmp_path, monkeypatch):
+    """A dangling global (project since removed) is not pinned."""
+    monkeypatch.delenv("ADMT_ENV", raising=False)
+    svc = _registered(tmp_path)
+    cfg = svc.load()
+    cfg.active_project = "ghost"  # global points at an unregistered name
+    svc.save(cfg)
+    monkeypatch.setattr(config_mod, "_current_terminal", lambda: ("/dev/ttysL", 31))
+    assert svc.resolved_active_name() == "ghost"
+    assert not (tmp_path / ".admt" / "sessions.yml").exists()
+
+
+def test_env_list_only_terminal_does_not_follow_later_env_use(tmp_path, monkeypatch):
+    """Regression (user-reported): a terminal that only ever ran `env list` must
+    not follow a later `env use` from another terminal.
+
+    Terminal A: env list -> sees proja (global), gets pinned by that resolution.
+    Terminal B: env use projb -> moves the global.
+    Terminal A: env list -> must STILL show proja.
+    """
+    monkeypatch.delenv("ADMT_ENV", raising=False)
+    svc = _registered(tmp_path, name="proja")  # global = proja
+    # Live PID for both sids: terminal B's prune-on-write checks the OTHER
+    # entry's sid liveness; a made-up dead PID would (correctly) get pruned
+    # and mask the regression this test guards.
+    live_sid = os.getpid()
+    term_a = ("/dev/ttysA", live_sid)
+    term_b = ("/dev/ttysB", live_sid)
+    # Terminal A runs `env list` (resolution only -- no get_active_project).
+    monkeypatch.setattr(config_mod, "_current_terminal", lambda: term_a)
+    assert svc.resolved_active_name() == "proja"
+    # Terminal B registers projb and switches to it (moves the global).
+    monkeypatch.setattr(config_mod, "_current_terminal", lambda: term_b)
+    alt = tmp_path / "b"
+    alt.mkdir()
+    svc.register_project(_make_project(alt, name="projb"))
+    svc.set_active_project("projb")
+    assert svc.load().active_project == "projb"
+    # Terminal A lists again: still proja.
+    monkeypatch.setattr(config_mod, "_current_terminal", lambda: term_a)
+    assert svc.resolved_active_name() == "proja"
+
+
+def test_set_active_writes_session_when_terminal_present(tmp_path, monkeypatch):
+    svc = _two_projects(tmp_path)
+    monkeypatch.delenv("ADMT_ENV", raising=False)
+    monkeypatch.setattr(config_mod, "_current_terminal", lambda: ("/dev/ttysC", 11))
+    svc.set_active_project("proja")
+    assert (tmp_path / ".admt" / "sessions.yml").exists()
+    assert svc.get_active_source() == ActiveSource.SESSION
+    assert svc.get_active_project().name == "proja"
+
+
+def test_set_active_no_terminal_skips_session(tmp_path, monkeypatch):
+    svc = _two_projects(tmp_path)
+    monkeypatch.setattr(config_mod, "_current_terminal", lambda: None)
+    svc.set_active_project("proja")
+    assert not (tmp_path / ".admt" / "sessions.yml").exists()
+    assert svc.load().active_project == "proja"  # global still updated
+
+
+def test_set_active_already_global_still_pins_this_terminal(tmp_path, monkeypatch):
+    """Regression: `env use <current-global>` must repin a differently-pinned terminal.
+
+    The global-save idempotency short-circuit must not skip the session write:
+    this terminal may be pinned elsewhere, and the user's explicit `env use` of
+    the (already-global) name has to take effect HERE.
+    """
+    svc = _two_projects(tmp_path)  # global = projb (last registered)
+    monkeypatch.delenv("ADMT_ENV", raising=False)
+    monkeypatch.setattr(config_mod, "_current_terminal", lambda: ("/dev/ttysB", 21))
+    svc._write_session("proja")  # this terminal pinned to proja
+    assert svc.get_active_project().name == "proja"
+    svc.set_active_project("projb")  # projb is ALREADY the global default
+    assert svc.get_active_project().name == "projb"  # terminal repinned
+    assert svc.load().active_project == "projb"
+
+
+def test_session_ignored_when_no_terminal(tmp_path, monkeypatch):
+    svc = _registered(tmp_path)
+    monkeypatch.setattr(config_mod, "_current_terminal", lambda: None)
+    assert svc._session_project(svc.load()) is None
+
+
+def test_session_stale_sid_falls_through_to_global(tmp_path, monkeypatch):
+    svc = _registered(tmp_path)
+    monkeypatch.delenv("ADMT_ENV", raising=False)
+    monkeypatch.setattr(config_mod, "_current_terminal", lambda: ("/dev/ttysX", 1))
+    svc._write_session("myproj")
+    # Same tty device, different session id: the terminal was recycled.
+    monkeypatch.setattr(config_mod, "_current_terminal", lambda: ("/dev/ttysX", 999))
+    assert svc._session_project(svc.load()) is None
+    assert svc.get_active_source() == ActiveSource.GLOBAL
+
+
+def test_session_no_entry_for_this_tty(tmp_path, monkeypatch):
+    svc = _registered(tmp_path)
+    monkeypatch.setattr(config_mod, "_current_terminal", lambda: ("/dev/ttysX", 1))
+    svc._write_session("myproj")
+    monkeypatch.setattr(config_mod, "_current_terminal", lambda: ("/dev/ttysY", 2))
+    assert svc._session_project(svc.load()) is None
+
+
+def test_session_unregistered_project_ignored(tmp_path, monkeypatch):
+    svc = _registered(tmp_path)
+    monkeypatch.setattr(config_mod, "_current_terminal", lambda: ("/dev/ttysX", 1))
+    svc._write_session("ghost")  # not a registered project
+    assert svc._session_project(svc.load()) is None
+
+
+def test_session_entry_not_a_dict_ignored(tmp_path, monkeypatch):
+    svc = _registered(tmp_path)
+    (tmp_path / ".admt" / "sessions.yml").write_text("sessions:\n  /dev/ttysZ: corrupt\n")
+    monkeypatch.setattr(config_mod, "_current_terminal", lambda: ("/dev/ttysZ", 1))
+    assert svc._session_project(svc.load()) is None
+
+
+def test_load_sessions_corrupt_non_dict_returns_empty(tmp_path):
+    svc = _svc(tmp_path)
+    (tmp_path / ".admt").mkdir()
+    (tmp_path / ".admt" / "sessions.yml").write_text("- a\n- b\n")
+    assert svc._load_sessions() == {}
+
+
+def test_load_sessions_missing_sessions_key_returns_empty(tmp_path):
+    svc = _svc(tmp_path)
+    (tmp_path / ".admt").mkdir()
+    (tmp_path / ".admt" / "sessions.yml").write_text("other: 1\n")
+    assert svc._load_sessions() == {}
+
+
+# ----- session-store pruning (closed terminals) -----
+
+
+def test_session_alive_true_for_live_pid(monkeypatch):
+    monkeypatch.setattr(os, "kill", lambda _pid, _sig: None)
+    assert _session_alive({"sid": 123}) is True
+
+
+def test_session_alive_false_for_dead_pid(monkeypatch):
+    def _dead(_pid, _sig):
+        raise ProcessLookupError
+
+    monkeypatch.setattr(os, "kill", _dead)
+    assert _session_alive({"sid": 123}) is False
+
+
+def test_session_alive_keeps_pid_on_permission_error(monkeypatch):
+    def _perm(_pid, _sig):
+        raise PermissionError
+
+    monkeypatch.setattr(os, "kill", _perm)
+    assert _session_alive({"sid": 123}) is True
+
+
+def test_session_alive_false_for_malformed_entry():
+    assert _session_alive("not-a-dict") is False
+    assert _session_alive({"sid": "not-an-int"}) is False
+
+
+def test_session_alive_false_for_non_positive_sid():
+    """sid<=0 would be immortal: kill(0,..) hits our own pgroup, kill(-1,..) broadcasts."""
+    assert _session_alive({"sid": 0}) is False
+    assert _session_alive({"sid": -1}) is False
+
+
+def test_load_sessions_unparseable_yaml_returns_empty(tmp_path):
+    """A corrupt session cache must degrade to empty, never break commands."""
+    svc = _svc(tmp_path)
+    (tmp_path / ".admt").mkdir()
+    (tmp_path / ".admt" / "sessions.yml").write_text("{[not yaml")
+    assert svc._load_sessions() == {}
+
+
+def test_register_project_pins_registering_terminal(tmp_path, monkeypatch):
+    """Regression: `env init` activates the new project, so the terminal that ran
+    it must be repinned -- a stale pin would contradict 'Active project: <new>'.
+    """
+    monkeypatch.delenv("ADMT_ENV", raising=False)
+    live_sid = os.getpid()
+    monkeypatch.setattr(config_mod, "_current_terminal", lambda: ("/dev/ttysI", live_sid))
+    svc = _registered(tmp_path, name="proja")
+    svc.set_active_project("proja")  # terminal pinned to proja
+    alt = tmp_path / "b"
+    alt.mkdir()
+    svc.register_project(_make_project(alt, name="projb"))  # env init projb
+    assert svc.resolved_active_name() == "projb"  # terminal follows the init
+
+
+def test_write_session_failure_warns_and_does_not_raise(tmp_path, monkeypatch, capsys):
+    """An unwritable session store must not break the command (review: PR #27).
+
+    The pin write runs on every resolution in an unpinned terminal, so a raw
+    write error here would brick every command. Degrade to a warning; the
+    terminal then follows the global default.
+    """
+    monkeypatch.delenv("ADMT_ENV", raising=False)
+    svc = _registered(tmp_path)
+    monkeypatch.setattr(config_mod, "_current_terminal", lambda: ("/dev/ttysW", os.getpid()))
+    msg = "Cannot write YAML file /sim/sessions.yml: disk full"
+    monkeypatch.setattr(svc._yaml, "dump", _raise_config_error(msg))
+    svc.set_active_project("myproj")  # must not raise
+    captured = capsys.readouterr()
+    assert "Could not save the terminal's active-project pin" in captured.err
+    assert "follow the global default" in captured.err
+    # Resolution still works via the global default (the documented fallback).
+    assert svc.get_active_project().name == "myproj"
+
+
+def _raise_config_error(msg):
+    def _raise(*_args, **_kwargs):
+        raise ConfigError(msg)
+
+    return _raise
+
+
+def test_write_session_prunes_closed_terminals(tmp_path, monkeypatch):
+    svc = _registered(tmp_path)
+    (tmp_path / ".admt" / "sessions.yml").write_text(
+        dedent(
+            """\
+            sessions:
+              /dev/ttysNEW:
+                project: myproj
+                sid: 100
+              /dev/ttysLIVE:
+                project: myproj
+                sid: 111
+              /dev/ttysDEAD:
+                project: myproj
+                sid: 999999
+            """
+        )
+    )
+
+    def _kill(pid, _sig):
+        if pid == 999999:  # noqa: PLR2004 -- the seeded dead PID
+            raise ProcessLookupError
+
+    monkeypatch.setattr(os, "kill", _kill)
+    monkeypatch.setattr(config_mod, "_current_terminal", lambda: ("/dev/ttysNEW", 222))
+    svc._write_session("myproj")
+    sessions = svc._load_sessions()
+    assert "/dev/ttysDEAD" not in sessions  # dead sid pruned
+    assert "/dev/ttysLIVE" in sessions  # live sid kept
+    assert sessions["/dev/ttysNEW"]["sid"] == 222  # current terminal rewritten  # noqa: PLR2004
+
+
+# ----- lazy auto-pin (a terminal locks in on first resolve) -----
+
+
+def test_get_active_project_autopins_terminal_to_global(tmp_path, monkeypatch):
+    monkeypatch.delenv("ADMT_ENV", raising=False)
+    svc = _registered(tmp_path)  # global = myproj
+    monkeypatch.setattr(config_mod, "_current_terminal", lambda: ("/dev/ttysA", 5))
+    assert svc.get_active_project().name == "myproj"
+    # First resolve wrote a session pin for this terminal.
+    assert svc._load_sessions().get("/dev/ttysA", {}).get("project") == "myproj"
+
+
+def test_get_active_project_no_autopin_without_terminal(tmp_path, monkeypatch):
+    monkeypatch.delenv("ADMT_ENV", raising=False)
+    svc = _registered(tmp_path)
+    monkeypatch.setattr(config_mod, "_current_terminal", lambda: None)
+    svc.get_active_project()
+    assert not (tmp_path / ".admt" / "sessions.yml").exists()
+
+
+def test_global_change_does_not_move_already_resolved_terminal(tmp_path, monkeypatch):
+    """Regression: a global move from ANOTHER terminal must not change this one.
+
+    A terminal that has resolved the active project once is pinned, so a later
+    global move (another terminal's `env init` + `env use`) leaves it untouched.
+    """
+    monkeypatch.delenv("ADMT_ENV", raising=False)
+    live_sid = os.getpid()  # dead sids would get pruned by the other terminal's write
+    svc = _registered(tmp_path, name="proja")  # global = proja
+    monkeypatch.setattr(config_mod, "_current_terminal", lambda: ("/dev/ttysA", live_sid))
+    assert svc.get_active_project().name == "proja"  # this terminal auto-pins to proja
+    # ANOTHER terminal registers projb (which activates it, moving the global).
+    monkeypatch.setattr(config_mod, "_current_terminal", lambda: ("/dev/ttysOther", live_sid))
+    alt = tmp_path / "b"
+    alt.mkdir()
+    svc.register_project(_make_project(alt, name="projb"))
+    assert svc.load().active_project == "projb"
+    # Back in this terminal: unaffected.
+    monkeypatch.setattr(config_mod, "_current_terminal", lambda: ("/dev/ttysA", live_sid))
+    assert svc.get_active_project().name == "proja"
+    assert svc.get_active_source() == ActiveSource.SESSION

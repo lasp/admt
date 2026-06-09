@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ruamel.yaml import YAML
+from ruamel.yaml.error import YAMLError
 
 from admt.exceptions import ConfigError
 
@@ -54,9 +55,25 @@ class YamlAdapter:
         except OSError as exc:
             msg = f"Cannot read YAML file {path}: {exc}"
             raise ConfigError(msg) from exc
+        except YAMLError as exc:
+            # Malformed YAML must surface as a clean admt error (exit 2), not a
+            # raw ruamel traceback that the CLI's AdmtError handler can't catch.
+            msg = f"Cannot parse YAML file {path}: {exc}"
+            raise ConfigError(msg) from exc
 
     def dump(self, data: object, path: Path) -> None:
-        """Write ``data`` to ``path`` as YAML, creating parents as needed."""
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("w", encoding="utf-8") as fh:
-            self._yaml.dump(data, fh)
+        """Write ``data`` to ``path`` as YAML, creating parents as needed.
+
+        Raises:
+            ConfigError: If the file or its parent directory cannot be written
+                (permissions, read-only filesystem, disk full). Mirrors
+                ``load`` -- raw ``OSError`` must not escape the adapter, since
+                the CLI converts only ``AdmtError`` into clean exits.
+        """
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("w", encoding="utf-8") as fh:
+                self._yaml.dump(data, fh)
+        except OSError as exc:
+            msg = f"Cannot write YAML file {path}: {exc}"
+            raise ConfigError(msg) from exc
