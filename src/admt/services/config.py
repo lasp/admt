@@ -17,7 +17,10 @@ from typing import TYPE_CHECKING, Any
 from admt.exceptions import ArgumentError, ConfigError
 
 if TYPE_CHECKING:
-    from admt.adapters.yaml_adapter import ComposeService, YamlAdapter
+    from collections.abc import Callable
+
+    from admt.adapters.docker import ResolvedCompose, ResolvedService
+    from admt.adapters.yaml_adapter import YamlAdapter
     from admt.services.output import OutputService
 
 
@@ -32,6 +35,8 @@ class ProjectConfig:
     name: str
     compose_file: Path
     compose_file_mtime: int
+    env_file: Path | None
+    env_file_mtime: int
     service_name: str
     container_name: str
     project_root: Path
@@ -57,11 +62,18 @@ class ConfigService:
         config_dir: Path,
         output: OutputService,
         yaml_adapter: YamlAdapter,
+        compose_resolver: Callable[[Path], ResolvedCompose],
     ) -> None:
-        """Bind the config directory and injected collaborators."""
+        """Bind the config directory and injected collaborators.
+
+        ``compose_resolver`` derives resolved compose metadata (after ``.env``
+        interpolation); in production it is ``adapters.docker.resolve_compose_config``.
+        Injected so unit tests can supply hand-built resolved structs without docker.
+        """
         self._config_dir = config_dir
         self._output = output
         self._yaml = yaml_adapter
+        self._resolve_compose = compose_resolver
 
     @property
     def config_path(self) -> Path:
@@ -166,8 +178,15 @@ class ConfigService:
         if not proj.compose_file.exists():
             msg = f"Compose file '{proj.compose_file}' is missing or unreadable."
             raise ConfigError(msg)
-        current_mtime = int(proj.compose_file.stat().st_mtime)
-        if current_mtime == proj.compose_file_mtime:
+        current_compose_mtime = int(proj.compose_file.stat().st_mtime)
+        # Track the colocated .env too: editing it (project name, ports) changes
+        # the resolved config even when the compose file is untouched. A .env
+        # added or removed since registration also reads as a change (0 sentinel).
+        _, current_env_mtime = self._resolve_env_file(proj.compose_file)
+        if (
+            current_compose_mtime == proj.compose_file_mtime
+            and current_env_mtime == proj.env_file_mtime
+        ):
             return
         updated = self._build_project(proj.project_root, proj.compose_file)
         for line in self._diff_projects(proj, updated):
@@ -218,31 +237,48 @@ class ConfigService:
         return docker_dir / chosen
 
     def _build_project(self, project_root: Path, compose_path: Path) -> ProjectConfig:
-        compose = self._yaml.parse_compose(compose_path)
-        service_name = self._resolve_service_name(compose.services)
-        service = compose.services[service_name]
-        project_name = compose.project_name or service_name
+        resolved = self._resolve_compose(compose_path)
+        service_name = self._resolve_service_name(resolved.services)
+        service = resolved.services[service_name]
+        # ``docker compose config`` always emits a resolved top-level name.
+        project_name = resolved.project_name
         container_name = service.container_name or f"{service_name}_container"
-        activate_script = self._derive_activate_script(project_root, service.volumes)
+        volume_mounts = {vol.source: vol.target for vol in service.volumes}
+        activate_script = self._derive_activate_script(project_root, volume_mounts)
         # activate_script is ``<container_home>/<project>/env/activate``; walking
         # up three parents lands on ``<container_home>``. Path saturates at ``/``
         # when the mount is pathologically short, so no fallback branch is needed.
         container_home = activate_script.parent.parent.parent
-        mtime = int(compose_path.stat().st_mtime)
+        env_file, env_mtime = self._resolve_env_file(compose_path)
         return ProjectConfig(
             name=project_name,
             compose_file=compose_path,
-            compose_file_mtime=mtime,
+            compose_file_mtime=int(compose_path.stat().st_mtime),
+            env_file=env_file,
+            env_file_mtime=env_mtime,
             service_name=service_name,
             container_name=container_name,
             project_root=project_root,
             container_home=container_home,
-            volume_mounts=dict(service.volumes),
+            volume_mounts=volume_mounts,
             activate_script=activate_script,
         )
 
     @staticmethod
-    def _resolve_service_name(services: dict[str, ComposeService]) -> str:
+    def _resolve_env_file(compose_path: Path) -> tuple[Path | None, int]:
+        """Return the colocated ``.env`` and its mtime (``None``/``0`` if absent).
+
+        docker compose auto-loads ``.env`` from the compose file's directory;
+        admt tracks its mtime so an edit to it (project name, ports) triggers a
+        re-derive even when the compose file itself is untouched.
+        """
+        env_path = compose_path.parent / ".env"
+        if env_path.exists():
+            return env_path, int(env_path.stat().st_mtime)
+        return None, 0
+
+    @staticmethod
+    def _resolve_service_name(services: dict[str, ResolvedService]) -> str:
         if not services:
             msg = "Compose file defines no services."
             raise ConfigError(msg)
@@ -251,7 +287,7 @@ class ConfigService:
         candidates = [
             name
             for name, svc in services.items()
-            if any(target.name == "adamant" for target in svc.volumes.values())
+            if any(vol.target.name == "adamant" for vol in svc.volumes)
         ]
         if len(candidates) == 1:
             return candidates[0]
@@ -308,6 +344,8 @@ class ConfigService:
             projects_out[name] = {
                 "compose_file": str(proj.compose_file),
                 "compose_file_mtime": proj.compose_file_mtime,
+                "env_file": str(proj.env_file) if proj.env_file else None,
+                "env_file_mtime": proj.env_file_mtime,
                 "service_name": proj.service_name,
                 "container_name": proj.container_name,
                 "project_root": str(proj.project_root),
@@ -349,6 +387,8 @@ class ConfigService:
                 name=name,
                 compose_file=Path(body["compose_file"]),
                 compose_file_mtime=int(body["compose_file_mtime"]),
+                env_file=Path(body["env_file"]) if body.get("env_file") else None,
+                env_file_mtime=int(body["env_file_mtime"]),
                 service_name=body["service_name"],
                 container_name=body["container_name"],
                 project_root=Path(body["project_root"]),

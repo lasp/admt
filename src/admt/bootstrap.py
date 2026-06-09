@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from admt.adapters.docker import DockerAdapter
+from admt.adapters.docker import DockerAdapter, resolve_compose_config
 from admt.adapters.yaml_adapter import YamlAdapter
 from admt.context import Context
 from admt.services.config import ConfigService
@@ -45,6 +45,7 @@ def build_context(
         config_dir=Path.home() / ".admt",
         output=output,
         yaml_adapter=YamlAdapter(),
+        compose_resolver=resolve_compose_config,
     )
     return Context(
         config_service=config_service,

@@ -31,6 +31,8 @@ def _project_stub(name: str = "myproj", mounts: int = 2) -> ProjectConfig:
         name=name,
         compose_file=Path(f"/sim/{name}/docker/docker-compose.yml"),
         compose_file_mtime=0,
+        env_file=None,
+        env_file_mtime=0,
         service_name=name,
         container_name=f"{name}_container",
         project_root=Path(f"/sim/{name}"),
