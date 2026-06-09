@@ -45,6 +45,8 @@ The tiers use different fixture sources by design:
 
 Tests must not mix the two sources. A unit test that reads `../../adamant/docker/docker-compose.yml` is brittle and belongs in tier 3; a container test that mocks `docker compose exec` is not a container test and belongs in tier 1 or 2.
 
+**Compose metadata comes from `docker compose config`, not raw YAML** (see [ARCHITECTURE.md Compose Parsing](ARCHITECTURE.md#compose-parsing)). `.env` interpolation therefore cannot be exercised by a synthetic YAML fixture in tiers 1/2 -- there is no docker there. So tiers 1/2 **mock the resolved-config adapter** and feed synthetic *resolved* structs (already-expanded `name`/`container_name`/absolute `volume_mounts`); only **tier 3** runs real `docker compose config` against a parameterized compose plus a `.env`. The TTY session store is pure logic and is unit-tested with a synthetic store plus a monkeypatched controlling-TTY/`getsid`.
+
 ---
 
 ## Mocking Boundaries
@@ -653,6 +655,33 @@ def test_no_circular_imports() -> None:
 - Running `admt env use` with the already-active project is a no-op
 - Running `admt env start` when already running reports "already running" (exit 0)
 - Running `admt env stop` when already stopped reports "already stopped" (exit 0)
+
+### Worktree / Multi-Environment Tests
+
+Covering the [Compose Parsing](ARCHITECTURE.md#compose-parsing) and [Active Project Resolution](ARCHITECTURE.md#active-project-resolution) amendments.
+
+**Compose parsing (tier 1/2 mock the resolved-config adapter; tier 3 real):**
+
+| Scenario | What to verify |
+|----------|---------------|
+| Parameterized compose + `.env` (tier 3) | Resolved `name`/`container_name`/mounts match `docker compose config` (e.g. `adamant_example-wt1`, not the literal `${...}`) |
+| `.env` mtime change | Next command re-derives config; `container_name`/ports update; notice printed |
+| `.env` removed after registration | Treated as a change; re-derives with no env file |
+| Compose unchanged, `.env` unchanged | No `docker compose config` call (cached values used); only the two `stat()`s run |
+| `docker` CLI absent on `env init` | Clear error naming the missing dependency |
+
+**Active project resolution (pure logic, tier 1; monkeypatch TTY/`getsid`):**
+
+| Scenario | What to verify |
+|----------|---------------|
+| `ADMT_ENV` set | Wins over session entry and global |
+| Session entry for current TTY | Used when no `ADMT_ENV`; overrides global |
+| `env use` writes both | Session entry for this TTY **and** global `active_project` updated |
+| New terminal (different TTY) | No session entry; falls back to global = last used |
+| Stale entry (`getsid` mismatch) | Ignored and pruned; falls back to global |
+| No controlling TTY (piped / `ADMT_NONINTERACTIVE`) | Session layer skipped; uses `ADMT_ENV` then global |
+| `env status` source | Reports active project **and** its source (`ADMT_ENV` / this terminal / global) |
+| Two worktrees, two TTYs (tier 3) | `env use wt1` in one terminal and `wt2` in another target distinct containers concurrently |
 
 ---
 
