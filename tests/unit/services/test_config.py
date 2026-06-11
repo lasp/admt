@@ -118,21 +118,21 @@ def test_register_project_writes_config_file(tmp_path):
 def test_register_project_missing_default_do(tmp_path):
     root = _make_project(tmp_path, markers=("docker-compose.yml", "env/activate"))
     svc = _svc(tmp_path)
-    with pytest.raises(ConfigError, match=r"default\.do"):
+    with pytest.raises(ArgumentError, match=r"default\.do"):
         svc.register_project(root)
 
 
 def test_register_project_missing_compose_file(tmp_path):
     root = _make_project(tmp_path, markers=("default.do", "env/activate"))
     svc = _svc(tmp_path)
-    with pytest.raises(ConfigError, match="docker/"):
+    with pytest.raises(ArgumentError, match="docker/"):
         svc.register_project(root)
 
 
 def test_register_project_missing_env_activate(tmp_path):
     root = _make_project(tmp_path, markers=("default.do", "docker-compose.yml"))
     svc = _svc(tmp_path)
-    with pytest.raises(ConfigError, match="env/activate"):
+    with pytest.raises(ArgumentError, match="env/activate"):
         svc.register_project(root)
 
 
@@ -209,8 +209,21 @@ def test_set_active_project_happy_path(tmp_path):
 
 def test_set_active_project_unknown_name_raises(tmp_path):
     svc = _svc(tmp_path)
-    with pytest.raises(ConfigError, match="No registered project"):
+    with pytest.raises(ArgumentError, match="No registered project"):
         svc.set_active_project("ghost")
+
+
+def test_set_active_project_already_active_is_noop(tmp_path):
+    """Idempotent: setting the already-active project skips the save round-trip."""
+    root = _make_project(tmp_path)
+    svc = _svc(tmp_path)
+    svc.register_project(root)  # registers myproj as active
+    config_path = tmp_path / ".admt" / "config.yml"
+    mtime_before = config_path.stat().st_mtime_ns
+    svc.set_active_project("myproj")
+    # No save -> mtime unchanged.
+    assert config_path.stat().st_mtime_ns == mtime_before
+    assert svc.load().active_project == "myproj"
 
 
 def test_get_active_project_returns_active(tmp_path):

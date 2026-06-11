@@ -3,6 +3,8 @@
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 from admt.bootstrap import build_container_service, build_context
 from admt.services.config import ProjectConfig
 from admt.services.container import ContainerService
@@ -39,16 +41,49 @@ def test_build_context_noninteractive_false_when_env_unset(monkeypatch):
     assert ctx.noninteractive is False
 
 
-def test_build_container_service_wires_docker_adapter():
+@pytest.mark.parametrize("value", ["", "0"])
+def test_build_context_noninteractive_zero_or_empty_evaluates_off(monkeypatch, value):
+    """ADMT_NONINTERACTIVE=0 (or empty) is OFF, matching POSIX shell convention.
+
+    Reverses the original "any non-empty value activates" rule; "0" now
+    means explicitly off so users with ``ADMT_NONINTERACTIVE=0`` in their
+    shell init don't trip into agent-mode unintentionally.
+    """
+    monkeypatch.setenv("ADMT_NONINTERACTIVE", value)
+    ctx = build_context(verbose=False, quiet=False, debug=False, yes=False, force=False)
+    assert ctx.noninteractive is False
+
+
+@pytest.mark.parametrize("value", ["1", "true", "yes", "on", "anything", "2"])
+def test_build_context_noninteractive_any_other_value_evaluates_on(monkeypatch, value):
+    """Any non-zero, non-empty ADMT_NONINTERACTIVE value activates the mode."""
+    monkeypatch.setenv("ADMT_NONINTERACTIVE", value)
+    ctx = build_context(verbose=False, quiet=False, debug=False, yes=False, force=False)
+    assert ctx.noninteractive is True
+
+
+def test_build_container_service_returns_container_and_mapper_tuple():
+    """Returns (ContainerService, PathMapperService) explicitly.
+
+    Replaces the previous side-effect form where the function mutated
+    ``context.path_mapper`` as a hidden side effect of returning a
+    ContainerService. The caller (``cli._run_command``) now assigns both
+    onto the Context, keeping the population of Context attributes in
+    the CLI adapter where it belongs.
+    """
     fake_ctx = MagicMock()
     fake_ctx.config_service.get_active_project.return_value = _project()
-    container = build_container_service(fake_ctx)
+    container, mapper = build_container_service(fake_ctx)
     assert isinstance(container, ContainerService)
+    assert isinstance(mapper, PathMapperService)
     fake_ctx.config_service.get_active_project.assert_called_once()
 
 
-def test_build_container_service_attaches_path_mapper_to_context():
+def test_build_container_service_does_not_mutate_context():
+    """Regression: confirm the function no longer touches ``context.path_mapper``."""
     fake_ctx = MagicMock()
     fake_ctx.config_service.get_active_project.return_value = _project()
+    # Sentinel: if the function mutated context.path_mapper, this would change.
+    fake_ctx.path_mapper = "untouched-sentinel"
     build_container_service(fake_ctx)
-    assert isinstance(fake_ctx.path_mapper, PathMapperService)
+    assert fake_ctx.path_mapper == "untouched-sentinel"

@@ -53,7 +53,7 @@ admt adds value through orchestration, context detection, output formatting, and
 
 ### R4. Host-Only, Container-Forwarding
 
-admt runs on the host machine only. It is never executed inside the Adamant container. Commands that need the container (build, test, style, etc.) transparently forward to the container via `docker compose exec`. Commands that do not (future: create, validate) run directly on the host. admt fails with a clear, actionable error when a container-required command cannot reach the container.
+admt runs on the host machine only. It is never executed inside the Adamant container. Commands that need the container (build, test, style, etc.) transparently forward to the container via `docker exec` (or `docker compose <subcommand>` for lifecycle ops -- see §"Compose vs. plain Docker"). Commands that do not (future: create, validate) run directly on the host. admt fails with a clear, actionable error when a container-required command cannot reach the container.
 
 ### R5. Non-Interactive Parity
 
@@ -165,17 +165,20 @@ Wrap external tools and libraries (Docker, pykwalify, redo, ruamel.yaml) behind 
 src/
   admt/
     __init__.py
-    main.py                    # Entry point
+    main.py                    # Entry point + SIGINT handler
     cli.py                     # Click adapter -- thin, no logic
+    cli_utils.py               # AliasedGroup (Click subclass with aliases)
+    bootstrap.py               # Service wiring (Context + ContainerService)
     context.py                 # Context and Result classes
     exceptions.py              # All admt-specific exceptions
 
     commands/                  # One file per command or command group
       __init__.py              # Command registry, discovery
-      base.py                  # Command base class
+      base.py                  # Command + ContainerPassthroughCommand bases
       build.py                 # admt build
       test_cmd.py              # admt test (avoid shadowing pytest)
       style.py                 # admt style
+      analyze.py               # admt analyze
       clean.py                 # admt clean
       prove.py                 # admt prove
       coverage.py              # admt coverage
@@ -186,7 +189,8 @@ src/
 
     services/                  # Shared capabilities
       __init__.py
-      container.py             # Container detection, lifecycle, exec
+      container.py             # Container lifecycle + exec + recovery
+      env_snapshot.py          # /tmp/admt/<project>/ snapshot proxy
       config.py                # Project registry, active project, ~/.admt/
       path_mapper.py           # Host <-> container path mapping
       output.py                # Structured output formatting
@@ -195,8 +199,9 @@ src/
 
     adapters/                  # External system wrappers
       __init__.py
-      docker.py                # Docker / docker compose interaction
-      redo.py                  # Redo build system interaction
+      docker.py                # docker / docker compose interaction
+      redo.py                  # redo command-string builder
+      redo_output.py           # Rewrite redo output into admt vocabulary
       yaml_adapter.py          # YAML reading/writing (ruamel.yaml)
       pykwalify_adapter.py     # Schema validation (post-MVP)
 
@@ -205,12 +210,19 @@ tests/
     commands/
     services/
     adapters/
+    test_architecture.py       # Layer rules + Context-mutation lint
   integration/                 # Shell calls to admt CLI
-  container/                   # Full pipeline against real container
+  container/                   # Full pipeline against real container (post-MVP)
   conftest.py                  # Shared fixtures
 
 pyproject.toml
 ```
+
+A few notes on the layout:
+
+- **`bootstrap.py` and `cli_utils.py`** live outside `cli.py` so the architectural cap on CLI callback length (15 lines per function body, enforced by `tests/unit/test_architecture.py::test_cli_functions_are_short`) is not strained by service instantiation or `AliasedGroup` machinery. `cli.py` imports from them and stays a thin adapter.
+- **`adapters/redo_output.py`** is the line-rewriter described in [§Output Rewriting](#output-rewriting). It legitimately belongs in `adapters/` (it translates output from an external tool); pulling it into `services/` would force a service to depend on string-rewrite plumbing that is fundamentally about how redo formats lines.
+- **`services/env_snapshot.py`** holds the `/tmp/admt/<project>/` snapshot machinery (capture baseline + activated env, diff, write `env_snapshot.sh` + `exec.sh`). Split out from `container.py` because env-parsing, shell-quote escaping, and container-side file paths are an orthogonal concern from lifecycle and exec/recovery.
 
 ---
 
@@ -430,6 +442,17 @@ No project configured. Run 'admt env init' to set up a project.
 
 This is the core mechanism for MVP. All build-related commands (`build`, `test`, `style`, `what`, `clean`, `prove`, `coverage`, `publish`, `templates`) work the same way:
 
+### Compose vs. plain Docker
+
+admt uses two distinct families of Docker invocations, picked deliberately:
+
+- **`docker compose -f <compose_file> <subcommand>`** for **lifecycle ops** that need the compose file: `up`, `stop`, `down`, `build`, `push`, `pull`. These define volumes, env, and the service graph; the compose plugin is the right tool. One-shot, user-initiated calls -- the compose-plugin overhead doesn't matter here.
+- **`docker exec -u user <container_name> ...`** and **`docker inspect <container_name>`** for the **hot path**: status probes, every passthrough exec, and snapshot-script I/O. These target the already-running container directly by name and bypass the compose plugin entirely.
+
+The split is justified by performance. On Docker Desktop for Mac, every `docker compose` invocation eats ~3s parsing the compose file before reaching the daemon. For status probes (every command run does one) and exec (every passthrough does one), that ~3s dominates the round-trip. Plain `docker exec` on the resolved `container_name` is roughly **20x faster**. Lifecycle ops only happen on user request (`admt env start`, `admt env stop`), so the overhead is amortized over a user-perceived "I'm starting the container" moment and doesn't matter.
+
+The `DockerAdapter` exposes both families (`compose_*` vs. `docker_*`) explicitly so the call site picks the right one. `ContainerService` routes lifecycle through `compose_*` and exec/status/snapshot I/O through `docker_*`.
+
 ### Path Mapping
 
 admt maps the host working directory to the container path using the volume mounts from the project config.
@@ -460,16 +483,23 @@ All admt container scripts are stored in a per-project directory: `/tmp/admt/<pr
 
 **First exec (no snapshot exists):**
 
-1. admt captures the environment **before** activation (the container's baseline):
+1. admt captures the environment **before** activation (the container's baseline) via a short bounded exec:
    ```bash
-   docker compose exec -u user <service> bash -c "env" > /tmp/baseline_env
+   docker exec -u user <container_name> env
    ```
-2. admt runs the project's `env/activate` and captures the environment **after**:
+   Output is parsed in Python on the host -- no temp file required.
+2. admt runs the project's `env/activate` with **stdio inherited** so the user sees the script's progress live (first-run activation can take many minutes -- pip installs, alr builds, gprbuild of the Pico runtime; running it through a captured pipe would look like a hang). The final `env` dump is redirected to a container-side file so it doesn't flood the user's terminal:
    ```bash
-   docker compose exec -u user <service> bash -c \
-       "source /home/user/<project>/env/activate && env" > /tmp/activated_env
+   docker exec -u user <container_name> bash -c \
+       "mkdir -p /tmp/admt/<project> && \
+        source /home/user/<project>/env/activate && \
+        env > /tmp/admt/<project>/env_activated"
    ```
-3. admt diffs the two captures on the host and writes **only the changed/added variables** as a flat export script. The diff algorithm: parse each capture as key-value pairs (split on first `=`). For each key in the activated set, if the key is absent from the baseline or has a different value, include it in the snapshot. Variables removed by activation are ignored (this is rare and not worth the complexity). The entire new value is stored (e.g., the full `PATH`, not a delta). The resulting script is written to `/tmp/admt/<project>/env_snapshot.sh` in the container via `docker compose exec ... bash -c "mkdir -p /tmp/admt/<project> && cat > /tmp/admt/<project>/env_snapshot.sh << 'ADMT_EOF'\n...\nADMT_EOF"`. Example content:
+   admt then reads the dump back via a short bounded `cat`:
+   ```bash
+   docker exec -u user <container_name> cat /tmp/admt/<project>/env_activated
+   ```
+3. admt diffs the two captures in Python and writes **only the changed/added variables** as a flat export script. The diff algorithm: parse each capture as key-value pairs (split on first `=`); skip lines whose key is not a valid POSIX shell identifier (filters activate-script chatter like `Note:` from leaking in as invalid `export`s). For each key in the activated set, if the key is absent from the baseline or has a different value, include it in the snapshot. Variables removed by activation are ignored (rare; not worth the complexity). The entire new value is stored (e.g., the full `PATH`, not a delta). Embedded `"` characters are backslash-escaped so the resulting `export KEY="..."` line is valid bash. The resulting script is written to `/tmp/admt/<project>/env_snapshot.sh` in the container via `docker_exec_with_stdin` (pipes the script content into a `bash -c "mkdir -p /tmp/admt/<project> && cat > .../env_snapshot.sh"`). Example content:
    ```bash
    #!/bin/bash
    # admt environment snapshot -- generated, do not edit
@@ -479,7 +509,7 @@ All admt container scripts are stored in a per-project directory: `/tmp/admt/<pr
    export ADAMANT_CONFIGURATION_YAML="/home/user/adamant_example/config/adamant_example.configuration.yaml"
    export PATH="/usr/gnat/bin:/home/user/.local/bin:..."
    ```
-4. admt writes a proxy exec script to `/tmp/admt/<project>/exec.sh` in the container (using the same `docker compose exec ... cat >` mechanism):
+4. admt writes a proxy exec script to `/tmp/admt/<project>/exec.sh` in the container (using the same `docker_exec_with_stdin` mechanism):
    ```bash
    #!/bin/bash
    # Written by admt -- do not edit
@@ -500,10 +530,10 @@ All admt container scripts are stored in a per-project directory: `/tmp/admt/<pr
 
 After the container starts, admt automatically runs the full activation and generates the snapshot so that the first `admt build` is fast.
 
-All exec calls go through the proxy script:
+All exec calls go through the proxy script. Per the §"Compose vs. plain Docker" split above, exec uses **plain `docker exec`** against the resolved container name, not `docker compose exec`:
 
 ```bash
-docker compose -f <compose_file> exec -u user <service> \
+docker exec -u user <container_name> \
     /tmp/admt/<project>/exec.sh bash -c "cd /home/user/adamant/src/components/ccsds_router && redo all"
 ```
 
@@ -515,15 +545,20 @@ Both scripts are project-specific (keyed by project name in the path). When the 
 1. CLI adapter parses args -> calls BuildCommand.execute(context)
 2. Config service loads active project from ~/.admt/config.yml (or ADMT_ENV override)
 3. Path mapper resolves host cwd -> container path
-4. Container service checks if container is running
-   - Not running? Prompt user: "Container not running. Start it? [Y/n]"
-     (unless --yes: auto-start, unless ADMT_NONINTERACTIVE: error + exit 2)
-5. Container service ensures /tmp/admt/<project>/exec.sh and env_snapshot.sh
-   exist in container (generates on first use or after container recreation)
-6. Container service execs: docker compose exec ... /tmp/admt/<project>/exec.sh ...
+4. Container service execs the proxy directly (optimistic):
+   docker exec -u user <container> /tmp/admt/<project>/exec.sh ...
    with stderr=subprocess.STDOUT to merge redo's stderr into stdout (see Output Routing)
-7. Exit code from redo is returned in Result
+5. On non-zero exit, container service diagnoses via _recover_infrastructure:
+   a. Container down? -> prompt / --yes auto-start / ADMT_NONINTERACTIVE error
+      (start() also regenerates the snapshot as part of its flow). Retry.
+   b. Container up but proxy script missing (snapshot wiped by an external
+      docker compose down/up)? -> regenerate the snapshot transparently. Retry.
+   c. Neither -> the failure is the user's command; propagate the exit code
+      as-is, no spurious retry.
+6. Exit code (from the first attempt or the retry) is returned in Result.
 ```
+
+**Why optimistic, not check-then-execute?** The previous design pre-flighted ``is_running()`` and ``ensure_env_snapshot()`` on every exec. Both are full ``docker`` round-trips (~3s each on Docker Desktop for Mac). On the steady-state happy path -- container up, snapshot present, command works -- those probes contribute nothing and add ~6s per command. The optimistic flow saves them and pays for the diagnostic only when something is actually wrong. The behavior the user sees is identical on every path: ``--yes`` still auto-starts, ``ADMT_NONINTERACTIVE`` still errors with the same message, the exit code reflects the user's actual command failure (not a synthetic infrastructure failure on top). Only the order of ops changed.
 
 ### Passthrough with Optional Path
 
@@ -577,9 +612,28 @@ redo    build/obj/Linux/...
 
 **How `ContainerService.exec()` reads flags:** `ContainerService.exec(command, context)` receives the full `Context` object. It reads `context.quiet`, `context.verbose`, and `context.debug` to decide how to spawn the subprocess (PIPE vs inherited stdio, whether to echo the command, whether to prepend `DEBUG=1`). The passthrough command itself does not need to configure subprocess behavior -- it just passes Context through.
 
-**`-v` and `-q` are NOT mutually exclusive.** Combining them is valid and useful: `admt -v -q build` prints the underlying `docker compose exec` command being executed but suppresses its output. This is especially helpful for agents that want to see what admt is doing under the hood without being flooded by build output. The combined behavior: verbose echo of commands + quiet capture of their output.
+**`-v` and `-q` are NOT mutually exclusive.** Combining them is valid and useful: `admt -v -q build` prints the underlying `docker exec` command being executed (or `docker compose ...` for lifecycle ops) but suppresses its output. This is especially helpful for agents that want to see what admt is doing under the hood without being flooded by build output. The combined behavior: verbose echo of commands + quiet capture of their output.
 
 **When admt needs to inspect output** (e.g., environment variable capture during snapshot generation): Use `subprocess.PIPE` to capture programmatically. This is the exception, not the default.
+
+### Output Rewriting
+
+Beyond merging stderr into stdout, admt also **rewrites redo's output into admt's vocabulary** so the stream the user sees is continuous with the command they typed. `redo  Compiling 13 objects...` becomes a gold status line; `redo    build/src/foo.adb` becomes `build build/src/foo.adb` (or `admt build build/src/foo.adb` for the `admt what` listing). The rewriting layer lives in `adapters/redo_output.py` (see [Directory Structure](#directory-structure)).
+
+Two callers consume it:
+
+1. **Streaming passthrough commands** (`admt build` et al.) install a per-line `LineTransform` on the `docker_exec` call. Each line redo emits is intercepted before reaching the user's terminal; the transform rewrites or drops it in real time.
+2. **`admt what`** captures the `redo what` output via `exec_captured` and post-processes the buffer once before printing -- the listing is short and benefits from a final cleanup pass.
+
+The rewriter recognizes three line categories on the redo stream:
+
+- **Top-level `redo  <target>` header** (exactly two spaces -- redo's "now processing X" marker). Dropped via `None` -- it's redundant with the verb the user just typed and with admt's own `<verb>...` opening status line.
+- **Multi-word `redo  <message>` status lines** (e.g., `redo  Compiling 13 objects...`, `redo  Moving 13 objects...`). Stripped of the `redo ` prefix and routed through `output.admt(bold=False)` -- admt-relayed, not admt-emphatic.
+- **Single-token `redo    <target>` progress lines** (four-or-more spaces -- nested dependency rebuilds). Rewritten to `[admt ]<verb> <target>` using a small map of redo target names to admt commands (`all`→`admt build`, `test`→`admt test`, `test_all`→`admt test --all`, etc.; unknown targets fall back to `admt build <target>` since `BuildCommand` forwards arbitrary positional targets through to redo). The verb gets bolded gold via `output.admt`; the target tail stays in the terminal's default color so it's still skimmable. Redo's nesting depth (extra spaces beyond the first level) is preserved as separator spacing between verb and target so the dependency tree stays legible.
+
+Anything else (compiler diagnostics, tool warnings, unstructured output) passes through verbatim with its original ANSI codes intact.
+
+In `--quiet` mode the transform is omitted; the captured buffer stays raw and is only emitted on failure via `OutputService.emit_captured`.
 
 ---
 
@@ -663,6 +717,7 @@ class Command(ABC):
     name: str                      # e.g., "build", "env start"
     help: str                      # Shown in --help
     requires_project: bool         # Must there be an active project configured?
+    requires_container: bool = False  # Set True for commands that need ContainerService
 
     @abstractmethod
     def execute(self, context: Context) -> Result:
@@ -674,7 +729,7 @@ Note: `Result` does not carry `stdout`/`stderr` strings. For passthrough command
 
 The `Context` object carries everything a command might need -- resolved paths, services, configuration, flags (verbose, quiet, yes, force). Commands never reach into global state; everything arrives through the context.
 
-**Note:** There is no `requires_container` flag. Whether a command needs the container is implicit -- commands that need it call `container_service.exec()`, and the container service handles the "is it running?" check, prompt, and auto-start logic at that point. Commands that don't need the container simply never call the service.
+**The `requires_container` flag.** Commands that need a live `ContainerService` set `requires_container = True`. The CLI adapter uses this flag to lazily wire `ContainerService` and `PathMapperService` onto the Context before `execute` runs -- so commands that don't need the container (e.g., `env init`, `env use`, `env list`) skip the wiring entirely and never pay the project-lookup cost. The metadata test in `tests/unit/test_architecture.py` verifies every concrete `Command` subclass declares the flag. Once inside `execute`, the container service still owns the "is it running?" / auto-start logic at exec time -- the flag governs *when* the service is constructed, not *how* it behaves.
 
 ### Why Classes, Not Functions
 
@@ -745,14 +800,19 @@ class ProveCommand(ContainerPassthroughCommand):
    Note: --force skips the confirmation prompt but still creates the backup.
 4. If yes:
    a. Back up existing implementation files to /tmp/admt-backup-XXXX/
+      (via tempfile.mkdtemp, which lands in /tmp on Linux/macOS)
    b. Print backup location so user can restore if needed
    c. Copy generated stubs from build/template/ to source directory
-   d. Record backup path in /tmp/admt-backup-latest (a plain text file
+   d. Record backup path in ~/.admt/backup-latest (plain text file
       containing the absolute path to the backup directory)
 5. Return Result listing files copied and backup location
 ```
 
-**`admt templates --undo`:** Restores files from the most recent backup created by `admt templates`. Reads the backup path from `/tmp/admt-backup-latest`. If no backup exists, admt exits with an error. Only the most recent backup is restorable (no history stack).
+The marker (`~/.admt/backup-latest`) is intentionally split from the backup directory itself (`/tmp/admt-backup-XXXX/`):
+- The **marker** lives under `~/.admt/` so it survives reboots -- a user who runs `admt templates`, reboots their machine, and then runs `admt templates --undo` shouldn't be silently denied because their pointer file got swept by `/tmp` cleanup.
+- The **backup directory** lives under `/tmp` (via `tempfile.mkdtemp`) and may be cleared on reboot. When the marker points to a missing directory, `--undo` errors clearly ("Backup directory ... is missing") rather than silently restoring nothing.
+
+**`admt templates --undo`:** Restores files from the most recent backup created by `admt templates`. Reads the backup path from `~/.admt/backup-latest`. If no marker exists, or the marker points to a missing directory, admt exits with a clear error. Only the most recent backup is restorable (no history stack).
 
 ---
 
@@ -857,6 +917,45 @@ class OutputService:
         With ADMT_NONINTERACTIVE: errors with exit code 3.
         """
         ...
+
+    def choose(self, message: str, choices: list[str]) -> str:
+        """Ask the user to pick one item from ``choices`` and return it.
+
+        Boolean ``prompt`` cannot express "pick one of N" (used by
+        ``admt env init`` when multiple compose files are present).
+
+        - A single-item list returns directly without prompting.
+        - With ADMT_NONINTERACTIVE set: raises ArgumentError -- there is
+          no meaningful default for an arbitrary list.
+        - --yes does NOT auto-resolve choose() -- there is no obvious
+          "default" item; the user has to pick one explicitly.
+        """
+        ...
+
+    def admt(self, message: str, *, bold: bool = True) -> str:
+        """Wrap ``message`` in admt's signature gold (#CFB87C) when stdout is a color TTY.
+
+        - bold=True (default): bold + gold. Used for admt verbs in
+          rewritten output (``build`` in ``build foo.adb``) and for the
+          opening status line of long-running commands (``building...``).
+        - bold=False: gold only. Used for closing markers (``done.``)
+          and for admt-relayed tool messages like multi-word redo
+          status lines (``Compiling 13 objects...``) -- admt-presented
+          but not admt-emphatic.
+
+        Returns the message unchanged when stdout is not a TTY or
+        NO_COLOR is set, so callers can wrap unconditionally.
+        """
+        ...
+
+    def emit_captured(self, content: str, *, to_stderr: bool = False) -> None:
+        """Print captured subprocess output verbatim, bypassing --quiet.
+
+        Used by passthrough commands so that a failed redo invocation
+        in --quiet mode still shows the captured output -- otherwise
+        the user sees only an exit code with no explanation.
+        """
+        ...
 ```
 
 ### Schema Service (Post-MVP)
@@ -947,11 +1046,11 @@ admt is **human-first and interactive by default**. When a command needs input, 
 - Designed for experienced humans who know what they want and don't need confirmation
 
 **`ADMT_NONINTERACTIVE` -- for agents and scripts:**
-- Set this environment variable (to any non-empty value) to switch to agent mode
+- Set this environment variable to a truthy value (anything other than `0` or empty) to switch to agent mode
 - **Never prompts.** Uses defaults when available; **errors with a non-zero exit code** when a required argument is missing and has no default
 - The error message tells the caller exactly what flag to provide
 - Designed for CI pipelines, scripts, and AI agents that must never block on stdin
-- Note: setting `ADMT_NONINTERACTIVE=0` still activates the mode (any non-empty value). Use `unset ADMT_NONINTERACTIVE` to disable.
+- **Value semantics:** `unset` and `ADMT_NONINTERACTIVE=0` are off; any other value (`1`, `true`, `yes`, `on`, etc.) is on. Matches POSIX-shell-style boolean conventions so users with `ADMT_NONINTERACTIVE=0` in their shell init don't trip into agent mode unintentionally.
 
 These are **not alternatives** -- they have different semantics:
 
@@ -996,11 +1095,11 @@ Distinct exit codes allow scripts and agents to branch on failure type without p
 When the user sends SIGINT (Ctrl+C) during a container-forwarded operation:
 
 1. admt catches SIGINT.
-2. admt sends SIGINT to the `docker compose exec` subprocess (best-effort propagation).
-3. admt prints the PID of the `docker compose exec` host process so the user can manually `kill -9` it if needed. Obtaining the PID of the process *inside* the container is non-trivial; for MVP, the host-side PID is sufficient.
+2. admt sends SIGINT to the in-flight `docker exec` (or `docker compose ...`) subprocess (best-effort propagation).
+3. admt prints the PIDs of any in-flight subprocesses so the user can manually `kill -9` them if needed. Obtaining the PID of the process *inside* the container is non-trivial; for MVP, the host-side PID is sufficient.
 4. admt exits with code 130.
 
-This is best-effort for MVP. The `docker compose exec` subprocess receives the signal, but the process inside the container (e.g., redo) may survive if `docker compose exec` simply disconnects. Printing the PID gives the user a fallback.
+This is best-effort for MVP. The host-side `docker` subprocess receives the signal, but the process inside the container (e.g., redo) may survive if `docker exec` simply disconnects. Printing the PID gives the user a fallback.
 
 ---
 
@@ -1044,7 +1143,7 @@ Removes the container. Flags control scope:
 - `--image`: Also remove the Docker image
 - `--remove-all`: Remove container, volumes, and image
 
-Prompts for confirmation unless `--yes` is passed. The project remains registered in `~/.admt/config.yml` -- only the container resources are removed.
+Prompts for confirmation (default **No**, since removal is destructive). `--force` skips the prompt entirely; `--yes` accepts the default and therefore *declines* the removal -- consistent with `--yes` meaning "accept the default", not "do the dangerous thing". The project remains registered in `~/.admt/config.yml` -- only the container resources are removed.
 
 ### Passthrough with `--debug`
 
@@ -1063,7 +1162,7 @@ This enables Adamant's redo-level debug output for diagnosing build system issue
 
 ```bash
 admt env exec "cd src/components/foo && redo test"
-# Runs: docker compose exec ... /tmp/admt/<project>/exec.sh bash -c "cd src/components/foo && redo test"
+# Runs: docker exec -u user <container_name> /tmp/admt/<project>/exec.sh bash -c "cd src/components/foo && redo test"
 ```
 
 ### `admt env login`
@@ -1071,7 +1170,7 @@ admt env exec "cd src/components/foo && redo test"
 `admt env login` does **not** go through the proxy script. It runs a bare interactive bash shell:
 
 ```bash
-# Runs: docker compose exec -it -u user <service> /bin/bash
+# Runs: docker exec -it -u user <container_name> /bin/bash
 ```
 
 The container's `.bashrc` already sources `env/activate` (or the cached snapshot), so the environment is activated automatically when bash starts. This matches the current `adamant_env.sh login` behavior.

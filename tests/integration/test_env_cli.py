@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 from click.testing import CliRunner
 
 from admt.cli import cli
-from admt.exceptions import ArgumentError, ConfigError
+from admt.exceptions import ArgumentError
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -77,7 +77,10 @@ def test_env_init_missing_markers_errors(tmp_path):
     bare.mkdir()
     runner = CliRunner()
     result = runner.invoke(cli, ["env", "init", str(bare)], env=_env(tmp_path))
-    assert result.exit_code != 0
+    # Missing project-root markers is an argument-shape error (exit 3),
+    # not an environment failure (exit 2): the user pointed admt at a
+    # path that doesn't look like an Adamant project.
+    assert result.exit_code == ArgumentError.exit_code
     assert "default.do" in result.output
     assert "env/activate" in result.output
 
@@ -180,7 +183,10 @@ def test_env_use_switches_active_project(tmp_path):
 def test_env_use_unknown_project_errors(tmp_path):
     runner = CliRunner()
     result = runner.invoke(cli, ["env", "use", "ghost"], env=_env(tmp_path))
-    assert result.exit_code == ConfigError.exit_code
+    # Unknown project name is an argument-shape error (exit 3): the user
+    # passed a name that isn't in the registry, not an environment
+    # failure (exit 2, which means "registry missing or unreadable").
+    assert result.exit_code == ArgumentError.exit_code
     assert "ghost" in result.output
 
 

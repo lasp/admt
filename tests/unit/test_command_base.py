@@ -17,17 +17,39 @@ def test_command_is_abstract():
         Command()  # type: ignore[abstract]  # intentional: verify ABC blocks instantiation
 
 
-def test_container_passthrough_command_is_concrete_after_phase_3():
-    # Phase 3 completed execute(); CPC is now instantiable on its own
-    # (though subclasses set redo_target and sometimes override
-    # resolve_target). It still asserts via ``requires_container = True``.
-    cpc = ContainerPassthroughCommand()
-    assert cpc.requires_container is True
-    assert cpc.requires_project is True
+def test_container_passthrough_command_cannot_be_instantiated_directly():
+    """CPC is abstract; direct construction raises TypeError per Q4."""
+    with pytest.raises(TypeError, match="abstract"):
+        ContainerPassthroughCommand()
 
 
-def test_container_passthrough_command_declares_requires_project():
-    assert ContainerPassthroughCommand.requires_project is True
+def test_container_passthrough_subclass_without_redo_target_fails_to_load():
+    """Concrete subclasses MUST declare a ``redo_target`` ClassVar.
+
+    ``__init_subclass__`` runs at class-definition time, so a subclass that
+    forgets ``redo_target`` fails to load -- not at runtime when execute()
+    would silently issue ``redo `` (empty target).
+    """
+    with pytest.raises(TypeError, match="redo_target"):
+
+        class _Forgot(ContainerPassthroughCommand):
+            name = "forgot"
+            help = "forgot"
+            # redo_target intentionally missing
+
+
+def test_container_passthrough_subclass_with_redo_target_loads():
+    """Sanity: a properly-declared subclass loads and is instantiable."""
+
+    class _OK(ContainerPassthroughCommand):
+        name = "ok"
+        help = "ok"
+        redo_target = "ok-target"
+
+    instance = _OK()
+    assert instance.redo_target == "ok-target"
+    assert instance.requires_container is True
+    assert instance.requires_project is True
 
 
 def test_command_subclass_without_execute_stays_abstract():

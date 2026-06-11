@@ -21,7 +21,7 @@ from admt.commands.env import (
     EnvStopCommand,
     EnvUseCommand,
 )
-from admt.exceptions import ArgumentError, ConfigError, ContainerError
+from admt.exceptions import ArgumentError, ContainerError
 from admt.services.config import ProjectConfig
 from admt.services.container import ContainerService, ContainerStatus
 
@@ -154,11 +154,11 @@ def test_env_use_switches_active_project(make_context):
     assert result.exit_code == 0
 
 
-def test_env_use_propagates_config_error(make_context):
+def test_env_use_propagates_argument_error(make_context):
     context = make_context()
     msg = "No registered project named 'ghost'"
-    context.config_service.set_active_project.side_effect = ConfigError(msg)
-    with pytest.raises(ConfigError, match="ghost"):
+    context.config_service.set_active_project.side_effect = ArgumentError(msg)
+    with pytest.raises(ArgumentError, match="ghost"):
         EnvUseCommand("ghost").execute(context)
 
 
@@ -309,6 +309,14 @@ def test_env_rm_remove_all_prompt_uses_combined_label(make_context):
     EnvRmCommand(remove_all=True).execute(ctx)
     prompt_message = ctx.output.prompt.call_args.args[0]
     assert "container + volumes + image" in prompt_message
+
+
+def test_env_rm_force_skips_prompt_and_calls_rm(make_context):
+    """``--force`` bypasses the prompt entirely and proceeds with removal."""
+    ctx, container = _ctx_with_container(make_context, force=True)
+    EnvRmCommand(remove_volumes=True).execute(ctx)
+    ctx.output.prompt.assert_not_called()
+    container.rm.assert_called_once_with(remove_volumes=True, remove_image=False, remove_all=False)
 
 
 def test_container_commands_missing_container_service_raises(make_context):

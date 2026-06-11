@@ -373,6 +373,19 @@ class PathNotMappedError(AdmtError):
 - **No framework imports.** admt interacts with the Adamant framework through its public interfaces: CLI commands, schemas, and file conventions. Importing framework internals (e.g., `from gen.models.component import component`) creates coupling that makes admt fragile to framework changes. This is a post-MVP concern but the principle holds now.
 - **Pin versions in `pyproject.toml`.** Use `>=X.Y,<X+1` bounds. Do not use unpinned `*` dependencies.
 
+### `uv.lock` policy
+
+`uv.lock` is committed to the repository. admt is an *application* installed via `uv tool install`, not a library, so the lock file is the contract that gives every developer, CI run, and AI agent the exact same dependency set.
+
+The recurring failure mode is **uv-version drift**: when a developer's local `uv` is newer than the one that last wrote the lockfile, `uv run` silently rewrites the file in the new on-disk format -- e.g., adds a `revision = 3` line, swaps marker syntax (`platform_system == 'Windows'` → `sys_platform == 'win32'`), adds `upload-time` keys on every wheel entry. The dependency graph is unchanged; only the format moves. Without a policy, that diff slips into unrelated PRs and pollutes the history.
+
+**Rules:**
+
+- **Bump `uv.lock` only when dependencies in `pyproject.toml` change** -- a real version bump, a new dep added, a dep removed. Those changes ride together with the lockfile diff in one commit.
+- **Mechanical lockfile churn must be reverted before committing unrelated work.** Standard playbook: when staging a feature change, if `git status` shows `M uv.lock` but you didn't touch `pyproject.toml`, run `git checkout uv.lock` before adding your feature files. The format-only diff doesn't ride along.
+- **Lockfile-format refreshes ship as their own commit/PR.** Title: `chore: refresh uv.lock format under uv X.Y.Z`. One-line body explaining what changed. Reviewer can scan the diff once and confirm it's purely mechanical.
+- **CI pins the uv version** (post-MVP, on `upstream/post-mvp-ci-pipeline`) so CI rewrites are deterministic and don't ping-pong against contributors running a slightly different version locally.
+
 ---
 
 ## Testing Requirements
@@ -465,3 +478,5 @@ These rules apply to AI agents contributing to admt. They supplement -- not repl
 6. **Stay within the established directory structure.** Do not create new top-level directories or reorganize existing structure without approval.
 
 7. **When in doubt: smaller, simpler, fewer dependencies.** The right answer is almost always less code, not more.
+
+8. **Never modify the spec to match the code unless explicitly asked to do so by a user.** The spec documents (ARCHITECTURE.md, CODING_RULES.md, TEST_PLAN.md) are the contract; the code is the implementation. When the two disagree, the *default* assumption is the code drifted and needs to come back into alignment with the spec -- not the other way around. Quietly editing the spec to "fix the docs" hides the drift, shifts the goal posts mid-flight, and leaves the user with no record of what changed in the implementation. If you find a divergence, surface it (a retro entry, a PR comment, a question to the user) and wait for an explicit "yes, update the spec" before touching the spec doc. The same holds for *any* of MVP_PLAN.md, README.md, or CLAUDE.md when those documents make claims about how the system behaves.

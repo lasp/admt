@@ -10,7 +10,7 @@ prove/coverage/publish all share the same flow.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from admt.adapters.redo import RedoAdapter
 from admt.adapters.redo_output import match_redo_status, rewrite_line_terse, split_verb
@@ -80,7 +80,7 @@ class Command(ABC):
 
 
 class ContainerPassthroughCommand(Command):
-    """Base for commands that forward a redo target into the container.
+    """Abstract base for commands that forward a redo target into the container.
 
     The standard flow:
 
@@ -96,17 +96,45 @@ class ContainerPassthroughCommand(Command):
        admt translates it to stdout) and ``capture_output=context.quiet``
        (quiet mode suppresses output on success, emits captured output
        on failure).
+
+    Direct instantiation raises ``TypeError`` (the class is abstract).
+    Concrete subclasses MUST declare ``redo_target`` as a ``ClassVar[str]``;
+    ``__init_subclass__`` enforces this at class-definition time so the
+    failure mode is "your class won't load" rather than "your command
+    silently runs ``redo `` (empty target) at runtime."
     """
 
     requires_project: ClassVar[bool] = True
     requires_container: ClassVar[bool] = True
-    redo_target: ClassVar[str] = ""
+    # No default for ``redo_target`` -- subclasses MUST declare. Enforced
+    # by ``__init_subclass__`` below.
+    redo_target: ClassVar[str]
     supports_all: ClassVar[bool] = False
     # Gerund for a static "admt <status_verb>..." line printed before
     # long-running commands so the user sees admt has started. ``None``
     # (the default) skips the line -- used for ``what`` (fast, output
     # speaks for itself) and ``templates`` (has its own output flow).
     status_verb: ClassVar[str | None] = None
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:  # noqa: ANN401 -- mirrors object.__init_subclass__'s ``**kwargs: Any`` signature
+        """Require concrete subclasses to declare ``redo_target`` as a ClassVar."""
+        super().__init_subclass__(**kwargs)
+        if "redo_target" not in cls.__dict__:
+            msg = (
+                f"{cls.__name__} must declare a `redo_target` ClassVar "
+                "(ContainerPassthroughCommand is abstract)."
+            )
+            raise TypeError(msg)
+
+    def __new__(cls, *args: Any, **kwargs: Any) -> ContainerPassthroughCommand:  # noqa: ANN401, ARG004 -- mirrors object.__new__'s ``*args: Any, **kwargs: Any`` signature; abstract guard does not consume args
+        """Block direct instantiation of the abstract base."""
+        if cls is ContainerPassthroughCommand:
+            msg = (
+                "ContainerPassthroughCommand is abstract; instantiate one of "
+                "its concrete subclasses (BuildCommand, TestCommand, ...)."
+            )
+            raise TypeError(msg)
+        return super().__new__(cls)
 
     def resolve_target(self, context: Context) -> str:
         """Return the redo target for this command.

@@ -628,7 +628,7 @@ def test_no_circular_imports() -> None:
 | `--force` | Files are overwritten without confirmation prompts |
 | `ADMT_NONINTERACTIVE` | Prompts become errors |
 | `ADMT_ENV` override | Correct project is used |
-| `ADMT_NONINTERACTIVE=0` | Still activates non-interactive mode (any non-empty value) |
+| `ADMT_NONINTERACTIVE=0` | Disables non-interactive mode (treated as off, same as unset) |
 | `NO_COLOR` env var | All color output suppressed |
 | Short alias | Same behavior as full command name |
 

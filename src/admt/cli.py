@@ -338,7 +338,7 @@ def _run_command(cmd: Command, admt_ctx: Context) -> None:
     """Execute a Command, wiring ContainerService on demand, converting errors to exits."""
     try:
         if cmd.requires_container:
-            admt_ctx.container_service = build_container_service(admt_ctx)
+            admt_ctx.container_service, admt_ctx.path_mapper = build_container_service(admt_ctx)
         result = cmd.execute(admt_ctx)
     except AdmtError as exc:
         admt_ctx.output.error(str(exc))

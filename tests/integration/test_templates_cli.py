@@ -79,8 +79,7 @@ def mock_container(monkeypatch):
 
     def fake_build(ctx):
         project = ctx.config_service.get_active_project()
-        ctx.path_mapper = PathMapperService(project.volume_mounts)
-        return container
+        return container, PathMapperService(project.volume_mounts)
 
     monkeypatch.setattr("admt.cli.build_container_service", fake_build)
     return container
@@ -191,14 +190,13 @@ def test_templates_undo_with_no_backup_errors(registered, mock_container, tmp_pa
 
 
 def test_tmpl_alias_works(registered, mock_container, tmp_path, monkeypatch):
+    """``admt tmpl`` resolves to ``admt templates``; global flags go *before*
+    the subcommand per ARCHITECTURE.md §Flag Placement.
+    """
     root, runner = registered
     _seed_stubs(root)
     monkeypatch.chdir(root)
-    result = runner.invoke(cli, ["tmpl", "-y"], env=_env_vars(tmp_path))
-    # Note: -y before the subcommand is a global flag; we use it here so the
-    # prompt auto-accepts. ``admt tmpl`` alone would hang on input in tests.
-    # For safety, also allow the alias form without global flag:
-    if result.exit_code != 0:
-        result = runner.invoke(cli, ["-y", "tmpl"], env=_env_vars(tmp_path))
+    # ``-y`` before the alias auto-accepts the (default=True) copy prompt.
+    result = runner.invoke(cli, ["-y", "tmpl"], env=_env_vars(tmp_path))
     assert result.exit_code == 0, result.output
     assert (root / "component-foo-implementation.ads").exists()

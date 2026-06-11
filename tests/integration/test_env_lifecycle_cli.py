@@ -18,6 +18,7 @@ from admt.cli import cli
 from admt.exceptions import ConfigError
 from admt.services.config import ProjectConfig
 from admt.services.container import ContainerService, ContainerStatus
+from admt.services.path_mapper import PathMapperService
 
 DEFAULT_COMPOSE = dedent(
     """\
@@ -81,7 +82,10 @@ def registered(tmp_path):
 def mock_container(monkeypatch):
     """Patch bootstrap.build_container_service so env lifecycle cmds don't need Docker."""
     container = MagicMock(spec=ContainerService)
-    monkeypatch.setattr("admt.cli.build_container_service", lambda _ctx: container)
+    # build_container_service now returns (container, path_mapper) per Q5.
+    # env lifecycle commands don't use the path mapper, so a mock is fine.
+    mapper = MagicMock(spec=PathMapperService)
+    monkeypatch.setattr("admt.cli.build_container_service", lambda _ctx: (container, mapper))
     return container
 
 
@@ -107,6 +111,43 @@ def test_env_restart_delegates_to_container(registered, mock_container, tmp_path
     result = runner.invoke(cli, ["env", "restart"], env=_env_vars(tmp_path))
     assert result.exit_code == 0
     mock_container.restart.assert_called_once()
+
+
+# ----- idempotency (TEST_PLAN.md §Idempotency Tests) -----
+
+
+def test_env_start_when_already_running_is_noop(registered, mock_container, tmp_path):
+    """``admt env start`` on an already-running container is exit 0 with notice."""
+    _, runner = registered
+    # ``mock_container.start`` is the unit under spec -- the integration test
+    # only checks that the CLI exits cleanly and delegates exactly once. The
+    # "already running" notice is asserted in the unit-tier test for
+    # ContainerService.start (test_start_already_running_short_circuits).
+    result = runner.invoke(cli, ["env", "start"], env=_env_vars(tmp_path))
+    assert result.exit_code == 0, result.output
+    mock_container.start.assert_called_once()
+
+
+def test_env_stop_when_already_stopped_is_noop(registered, mock_container, tmp_path):
+    """``admt env stop`` on an already-stopped container is exit 0 with notice."""
+    _, runner = registered
+    result = runner.invoke(cli, ["env", "stop"], env=_env_vars(tmp_path))
+    assert result.exit_code == 0, result.output
+    mock_container.stop.assert_called_once()
+
+
+def test_env_use_already_active_is_noop(tmp_path):
+    """``admt env use <already-active>`` is exit 0; no config file rewrite."""
+    root = _make_project(tmp_path)
+    runner = CliRunner()
+    runner.invoke(cli, ["env", "init", str(root)], env=_env_vars(tmp_path))
+    config_path = tmp_path / ".admt" / "config.yml"
+    mtime_before = config_path.stat().st_mtime_ns
+    result = runner.invoke(cli, ["env", "use", "myproj"], env=_env_vars(tmp_path))
+    assert result.exit_code == 0, result.output
+    assert "Active project: myproj" in result.output
+    # No save -> mtime unchanged.
+    assert config_path.stat().st_mtime_ns == mtime_before
 
 
 def test_env_status_prints_state(registered, mock_container, tmp_path):
@@ -197,15 +238,45 @@ def test_env_rm_declines_without_yes(registered, mock_container, tmp_path):
     mock_container.rm.assert_not_called()
 
 
-def test_env_rm_proceeds_with_yes(registered, mock_container, tmp_path):
+def test_env_rm_yes_alone_does_not_proceed(registered, mock_container, tmp_path):
+    """``--yes`` selects the default of a prompt; default for rm is No.
+
+    The user must pass ``--force`` to skip the prompt for a destructive op.
+    """
     _, runner = registered
-    result = runner.invoke(cli, ["-y", "env", "rm"], env=_env_vars(tmp_path), input="")
-    # --yes has no effect on a prompt with default=False -- it still declines.
-    # Use an explicit y response to proceed.
+    result = runner.invoke(cli, ["-y", "env", "rm"], env=_env_vars(tmp_path), input="\n")
+    assert result.exit_code == 0
+    assert "Aborted" in result.output
+    mock_container.rm.assert_not_called()
+
+
+def test_env_rm_proceeds_with_explicit_y(registered, mock_container, tmp_path):
+    _, runner = registered
     result = runner.invoke(cli, ["env", "rm"], env=_env_vars(tmp_path), input="y\n")
     assert result.exit_code == 0, result.output
     mock_container.rm.assert_called_once_with(
         remove_volumes=False, remove_image=False, remove_all=False
+    )
+
+
+def test_env_rm_with_force_skips_prompt(registered, mock_container, tmp_path):
+    """``--force`` skips the prompt entirely; no stdin is read."""
+    _, runner = registered
+    result = runner.invoke(cli, ["-f", "env", "rm"], env=_env_vars(tmp_path))
+    assert result.exit_code == 0, result.output
+    assert "Aborted" not in result.output
+    mock_container.rm.assert_called_once_with(
+        remove_volumes=False, remove_image=False, remove_all=False
+    )
+
+
+def test_env_rm_with_force_and_remove_all(registered, mock_container, tmp_path):
+    """``--force`` composes with the scope flags and still skips the prompt."""
+    _, runner = registered
+    result = runner.invoke(cli, ["-f", "env", "rm", "--remove-all"], env=_env_vars(tmp_path))
+    assert result.exit_code == 0, result.output
+    mock_container.rm.assert_called_once_with(
+        remove_volumes=False, remove_image=False, remove_all=True
     )
 
 
