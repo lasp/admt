@@ -250,6 +250,22 @@ Comments are required for:
 - Constants and magic values (explain their origin)
 - Regular expressions (explain what they match)
 
+### Timeless Comments
+
+Comments and docstrings describe the **current** design only. Never narrate how the code evolved: no "previously did X", "was added after release Y", "older versions wrote Z; these upgrade in place", or any other reference to past states of the codebase. Such comments are stale the moment the transition era passes; git history is where the evolution story lives.
+
+```python
+# Good -- timeless: states the current contract and why
+# env_file/env_file_mtime are optional keys: configs may lack them, and a
+# load failure here would break every command. The defaults are safe.
+
+# Bad -- narrates history: stale as soon as "older" versions are gone
+# env_file/env_file_mtime were added after the first release; default them
+# so configs written by an older admt still load.
+```
+
+Rationale about current behavior ("nanosecond mtimes so same-second edits are detected") is encouraged; rationale framed against past behavior is not. This applies everywhere prose lives: code comments, docstrings, test names, and test docstrings (name the *scenario* -- `test_config_missing_env_fields` -- not the *era* -- `test_config_predating_env_fields`).
+
 ### Docstrings
 
 Every public class and public method gets a docstring. Use Google-style docstrings:
