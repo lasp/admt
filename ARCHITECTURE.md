@@ -1143,7 +1143,7 @@ Removes the container. Flags control scope:
 - `--image`: Also remove the Docker image
 - `--remove-all`: Remove container, volumes, and image
 
-Prompts for confirmation unless `--yes` is passed. The project remains registered in `~/.admt/config.yml` -- only the container resources are removed.
+Prompts for confirmation (default **No**, since removal is destructive). `--force` skips the prompt entirely; `--yes` accepts the default and therefore *declines* the removal -- consistent with `--yes` meaning "accept the default", not "do the dangerous thing". The project remains registered in `~/.admt/config.yml` -- only the container resources are removed.
 
 ### Passthrough with `--debug`
 
