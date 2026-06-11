@@ -309,9 +309,11 @@ active_project: adamant_example
 projects:
   adamant_example:
     compose_file: /Users/dev/projects/adamant_example/docker/docker-compose.yml
-    compose_file_mtime: 1744646400  # Unix timestamp -- mtime of compose file when config last updated
+    compose_file_mtime: 1744646400123456789  # st_mtime_ns of compose file when config last derived
+    env_file: /Users/dev/projects/adamant_example/docker/.env  # colocated .env, if present (else null)
+    env_file_mtime: 1744646400123456789      # st_mtime_ns of .env when config last derived
     service_name: adamant_example
-    container_name: adamant_example_container
+    container_name: adamant_example_container  # RESOLVED value (see "Compose Parsing" below)
     project_root: /Users/dev/projects/adamant_example
     container_home: /home/user
     volume_mounts:
@@ -333,23 +335,37 @@ projects:
     activate_script: /home/user/adamant/env/activate
 ```
 
+The stored `service_name`, `container_name`, and `volume_mounts` are **resolved** values (see [Compose Parsing](#compose-parsing)), not raw compose-file text -- so a parameterized compose like `container_name: ${COMPOSE_PROJECT_NAME:-adamant_example}_container` is stored as its fully-expanded result (e.g., `adamant_example-wt1_container`).
+
+Per-shell active-project state is **not** stored here. It lives in a separate per-terminal store (see [Active Project Resolution](#active-project-resolution)).
+
+### Compose Parsing
+
+admt never reads the compose file as raw YAML to derive project metadata: a compose file may interpolate variables from a colocated `.env` (e.g. `name: ${COMPOSE_PROJECT_NAME:-adamant_example}`, parameterized host ports), and raw YAML would store the literal `${...}` strings. Because the container is targeted directly by `container_name` on the hot path ([Container Passthrough](#container-passthrough)), an unresolved name breaks every `build`/`test`/`exec`.
+
+Instead, admt derives `name`, `service_name`, `container_name`, and `volume_mounts` (with absolute host sources) from **`docker compose -f <compose_file> config --format json`**, which loads `.env`, resolves interpolation, and canonicalizes relative volume sources. This is the only correct source of truth and keeps admt a thin wrapper (R2, R3) rather than reimplementing Docker's interpolation grammar.
+
+This invocation runs only at registration, on `env refresh`, and on the first command after the compose file or `.env` changes (see [Config Auto-Update](#config-auto-update)) -- never on the per-command hot path, which reads the cached resolved values from `~/.admt/config.yml`. Because admt shells out to `docker compose config`, the docker CLI must be installed (not necessarily running) for `env init`/`refresh`.
+
+Caveat (Docker semantics, not admt's): variables exported in the calling shell outrank the `.env` file during interpolation. A globally-exported `COMPOSE_PROJECT_NAME` would make every project resolve to that name. admt does not work around this -- the resolved values faithfully reflect what `docker compose up` would actually do in that shell.
+
 ### Config Auto-Update
 
-admt records `compose_file_mtime` (the Unix modification timestamp of `docker-compose.yml` at the time the project config was last written) in `~/.admt/config.yml` for each project. On every admt command that uses an active project, admt stats the compose file and compares its current mtime to the stored `compose_file_mtime`:
+admt records both `compose_file_mtime` and `env_file_mtime` (the **nanosecond** modification timestamps, `st_mtime_ns`, of `docker-compose.yml` and its colocated `.env`, at the time the project config was last derived) in `~/.admt/config.yml` for each project. Nanosecond granularity means two edits within the same second cannot slip past the check. On every admt command that uses an active project, admt stats both files and compares their current mtimes to the stored values; any mismatch triggers a re-derive. These two `stat()` calls are the only per-command cost; they are negligible.
 
-- **If the compose file is unchanged**, admt proceeds normally.
-- **If the compose file is newer**, admt silently re-parses it, updates the stored `service_name`, `container_name`, `volume_mounts`, and other derived fields, updates `compose_file_mtime`, and prints a concise notice to stdout describing the change (e.g., `Updated config: added mount ../../new-repo -> /home/user/new-repo`). admt then continues with the original command.
+- **If neither file is newer**, admt proceeds normally using the cached resolved values.
+- **If either is newer**, admt re-derives the project via `docker compose config` (see [Compose Parsing](#compose-parsing)), updates the stored `service_name`, `container_name`, `volume_mounts`, `compose_file_mtime`, and `env_file_mtime`, and prints a concise notice to stdout describing the change (e.g., `Updated config: added mount ../../new-repo -> /home/user/new-repo`). admt then continues with the original command.
 
-This auto-update means users never need to manually re-run `admt env init` after editing their compose file. The update is silent-ish (just a one-line notice), non-interactive, and happens regardless of `--yes` or `ADMT_NONINTERACTIVE`. If the compose file is deleted or unreadable, admt errors clearly.
+The `.env` is tracked because it drives interpolation: changing `COMPOSE_PROJECT_NAME` or a host port in `.env` changes the resolved `container_name`/mounts even though the compose file itself is untouched. The auto-update means users never re-run `admt env init` after editing either file. The update is non-interactive (just a one-line notice) and happens regardless of `--yes` or `ADMT_NONINTERACTIVE`. If the compose file is deleted or unreadable, admt errors clearly. A `.env` that was present at registration but later removed is treated as a change (re-derive with no env file).
 
 ### `admt env init`
 
-Registers a new project with admt. Must be run from the project root directory, or with an explicit path to a project root. admt verifies that all three project root markers are present, then parses the docker compose file to automatically extract:
+Registers a new project with admt. Must be run from the project root directory, or with an explicit path to a project root. admt verifies that all three project root markers are present, then derives project metadata via `docker compose config` ([Compose Parsing](#compose-parsing)) to extract:
 
-- Project name (from the top-level `name:` field in the compose file)
+- Project name (the resolved top-level `name:`, after `.env` interpolation)
 - Service name (if multiple services, selects the one that bind-mounts `adamant/`)
-- Container name (from `container_name:` field, or derived from service name and verified via `docker compose ps`)
-- All volume mounts (builds the host <-> container path map)
+- Container name (the resolved `container_name:`)
+- All volume mounts, with absolute host sources (builds the host <-> container path map)
 - Project root (the directory containing the markers)
 
 If multiple docker compose YAML files are found in `docker/`, admt prompts the user to select one. In `ADMT_NONINTERACTIVE` mode, this is an error with exit code 3.
@@ -397,7 +413,7 @@ admt env use adamant_example
 admt env use adamant-standalone
 ```
 
-The active project determines which container all commands target. This is critical when working in a repo (like `adamant/`) that is mounted into multiple project containers.
+`env use` writes **two** things: the per-terminal session entry (so the *current* terminal switches immediately) and the global `active_project` (so *new* terminals default to the last project you used). See [Active Project Resolution](#active-project-resolution). The active project determines which container all commands target. This is critical when working in a repo (like `adamant/`) that is mounted into multiple project containers -- which is also why the active project cannot be inferred from the working directory: a shared mount like `adamant/` belongs to several projects at once.
 
 ### `ADMT_ENV` Override
 
@@ -420,21 +436,35 @@ $ admt env list
 * adamant_example           ~/projects/adamant_example/docker/docker-compose.yml
 ```
 
-### Discovery Flow
+### Active Project Resolution
 
-When any admt command runs:
+Different terminals must be able to target different projects at the same time -- e.g. one terminal per worktree, each on its own container -- while a single global default still applies to freshly opened terminals. admt achieves this with a **per-terminal session store** plus the global `active_project`, resolved in this order:
 
-1. Check `ADMT_ENV` environment variable. If set, use that project name.
-2. Otherwise, read `~/.admt/config.yml` and get the `active_project` entry.
-3. Look up that project's config (compose file, volume mounts, service name).
-4. If the command needs the container, use the project's container config.
-5. Map the current host working directory to the container path using volume mounts.
+1. **`ADMT_ENV`** environment variable, if set. Explicit, per-invocation, always wins.
+2. **Per-terminal session entry**, if one exists for this terminal (set by `admt env use`).
+3. **Global `active_project`** from `~/.admt/config.yml` (the last project any terminal `use`d).
 
-If `~/.admt/config.yml` does not exist or has no active project, admt prints:
+If none of these yields a registered project, admt prints:
 
 ```
 No project configured. Run 'admt env init' to set up a project.
 ```
+
+Whichever wins, admt then looks up that project's cached config (after the [Config Auto-Update](#config-auto-update) staleness check), and -- for container commands -- maps the host working directory to the container path via that project's volume mounts.
+
+#### Per-Terminal Session Store
+
+The session store gives admt per-shell memory **without** a shell shim, an `eval`, or any rc-file setup: a normal `admt env use` in one terminal cannot change another terminal's behavior, and a child process cannot export into its parent shell, so admt records the choice itself.
+
+- **Key:** the controlling TTY of the admt process (e.g. `/dev/ttys003`), with the POSIX session id (`getsid`) stored alongside as a staleness guard. Two admt invocations in the same terminal share a TTY; a different terminal window has a different TTY.
+- **Location:** `~/.admt/sessions.yml` (separate from `config.yml`; this is volatile per-terminal state, not project registry).
+- **Write:** `admt env use <name>` records `<tty> -> {project: <name>, sid: <getsid>}` and also updates the global `active_project`.
+- **Read:** resolution step 2 looks up the current TTY. The entry is honored only if its stored `sid` still matches the current session id; otherwise the TTY was recycled by a new terminal and the stale entry is ignored (it is dropped on the next session write, which prunes entries whose owning shell has exited). The store is a disposable cache: an unreadable or corrupt `sessions.yml` degrades to "no sessions" rather than failing commands, and a failed pin write (unwritable `~/.admt`, disk full) degrades to a warning -- the terminal then follows the global default. The terminal is identified by probing stdin, then stderr, then stdout for a tty -- so a piped stdin (`echo y | admt ...`) does not lose the terminal's pin.
+- **Lazy auto-pin:** the first time a terminal resolves the active project via the global default (step 3), admt writes a session entry pinning that terminal to the resolved project. **Every resolution path pins** -- `env list`, `env status`, and passthrough commands alike -- because any command that has shown the user which project the terminal is on has made a commitment; the terminal must stay on that project until told otherwise. This snapshots the inherited global into the terminal -- the no-shim equivalent of exporting `ADMT_ENV` at shell startup -- so that a later `env use` in another terminal (which moves the global) cannot change what an already-resolved terminal targets. Without it, an unpinned terminal would keep following every global change, leaking one terminal's `env use` into others. `ADMT_ENV`-sourced resolutions are never persisted (explicit per-invocation overrides stay ephemeral), and a global naming an unregistered project is not pinned. New terminals still inherit the last-used global, then immediately pin themselves.
+- **No controlling TTY** (CI, agents under `ADMT_NONINTERACTIVE`, piped or `xargs` invocations): the session layer is skipped entirely; resolution uses `ADMT_ENV` then global `active_project`. Those contexts should set `ADMT_ENV` explicitly.
+- **Granularity is per-terminal, not per-process:** a subshell or script launched within a terminal inherits that terminal's active project.
+
+This is intentionally observable state (R11), not hidden: `admt env status` reports the active project **and its source** -- `ADMT_ENV`, this terminal's session entry, or the global default -- so the user can always tell why a given project is active.
 
 ---
 
@@ -831,16 +861,26 @@ class ConfigService:
     def get_active_project(self) -> ProjectConfig:
         """Return the active project config.
 
-        Checks ADMT_ENV env var first, then active_project in config.
-        Raises ConfigError if no project is configured.
+        Resolution order: ADMT_ENV env var, then this terminal's session
+        entry, then the global active_project (see Active Project
+        Resolution). Runs the Config Auto-Update staleness check before
+        returning. Raises ConfigError if no project is configured.
         """
         ...
-    def set_active_project(self, name: str) -> None: ...
+    def get_active_source(self) -> ActiveSource:
+        """Report which mechanism selected the active project (for env status)."""
+        ...
+    def set_active_project(self, name: str) -> None:
+        """Set the per-terminal session entry AND the global active_project."""
+        ...
     def register_project(self, project_root: Path) -> ProjectConfig:
-        """Register a project. Verifies markers, discovers compose file, parses it."""
+        """Register a project. Verifies markers, derives config via
+        `docker compose config` (resolves .env interpolation)."""
         ...
     def list_projects(self) -> dict[str, ProjectConfig]: ...
 ```
+
+The per-terminal session store (`~/.admt/sessions`, keyed by controlling TTY with a `getsid` staleness guard) is managed by `ConfigService`. Deriving resolved metadata requires shelling out, so `register_project` and the auto-refresh delegate the `docker compose config` call to the Docker adapter (only adapters import `subprocess`); the resolved struct is passed back to the service.
 
 ### Container Service
 

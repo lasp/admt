@@ -17,18 +17,19 @@ when the user hits Ctrl-C.
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import sys
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
-from admt.exceptions import ContainerError
+from admt.exceptions import ConfigError, ContainerError
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
-    from pathlib import Path
     from typing import TextIO
 
     # Popen[Any] widens across byte-mode (``_spawn_tracked``) and text-mode
@@ -73,6 +74,126 @@ def _detect_compose_command() -> list[str]:
         return ["docker-compose"]
     msg = "Neither 'docker' nor 'docker-compose' is on PATH. Install Docker to continue."
     raise ContainerError(msg)
+
+
+# ----------------------------------------------------------------------
+# Resolved compose metadata (via ``docker compose config``).
+#
+# admt never reads a compose file as raw YAML to derive project metadata: a
+# compose file may interpolate variables from a colocated ``.env`` (e.g.
+# ``name: ${COMPOSE_PROJECT_NAME:-adamant_example}`` and parameterized host ports),
+# and raw YAML would yield the literal ``${...}`` strings. Because the hot path
+# targets the container directly by ``container_name``, an unresolved name
+# breaks every exec. ``docker compose config`` loads ``.env``, resolves
+# interpolation, and emits absolute volume sources -- the only correct source
+# of truth. See ARCHITECTURE.md "Compose Parsing".
+# ----------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ResolvedVolume:
+    """A bind mount as resolved by ``docker compose config`` (absolute source)."""
+
+    source: Path
+    target: Path
+
+
+@dataclass(frozen=True)
+class ResolvedService:
+    """A single service from resolved compose config."""
+
+    name: str
+    container_name: str | None
+    volumes: list[ResolvedVolume]
+
+
+@dataclass(frozen=True)
+class ResolvedCompose:
+    """Fully-resolved compose metadata, after ``.env`` interpolation."""
+
+    project_name: str
+    services: dict[str, ResolvedService]
+
+
+def resolve_compose_config(
+    compose_file: Path, *, compose_cmd: list[str] | None = None
+) -> ResolvedCompose:
+    """Resolve compose metadata via ``docker compose -f <file> config --format json``.
+
+    Loads the colocated ``.env``, expands ``${VAR}`` interpolation, and emits
+    absolute volume sources -- so a parameterized
+    ``container_name: ${COMPOSE_PROJECT_NAME:-x}_container`` resolves to its real
+    value. Runs only at registration/refresh, never on the per-command hot path.
+
+    Args:
+        compose_file: Absolute path to the compose file.
+        compose_cmd: Override the detected compose argv prefix (for tests).
+
+    Returns:
+        The resolved project name and services.
+
+    Raises:
+        ConfigError: If ``docker compose config`` fails, times out, or returns
+            output admt cannot parse.
+        ContainerError: If neither ``docker`` nor ``docker-compose`` is on PATH.
+    """
+    prefix = compose_cmd if compose_cmd is not None else _detect_compose_command()
+    cmd = [*prefix, "-f", str(compose_file), "config", "--format", "json"]
+    try:
+        completed = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_BOUNDED_TIMEOUT_SECS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        msg = (
+            f"'docker compose config' timed out after {_BOUNDED_TIMEOUT_SECS}s for {compose_file}."
+        )
+        raise ConfigError(msg) from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or "unknown error"
+        msg = f"'docker compose config' failed for {compose_file}: {detail}"
+        raise ConfigError(msg)
+    return _parse_resolved_config(completed.stdout, compose_file)
+
+
+def _parse_resolved_config(raw_json: str, compose_file: Path) -> ResolvedCompose:
+    try:
+        doc = json.loads(raw_json)
+    except json.JSONDecodeError as exc:
+        msg = f"'docker compose config' returned invalid JSON for {compose_file}: {exc}"
+        raise ConfigError(msg) from exc
+    name = doc.get("name") if isinstance(doc, dict) else None
+    services_raw = doc.get("services") if isinstance(doc, dict) else None
+    if not isinstance(name, str) or not isinstance(services_raw, dict):
+        msg = f"'docker compose config' for {compose_file} is missing 'name' or 'services'."
+        raise ConfigError(msg)
+    services = {
+        svc_name: _parse_resolved_service(svc_name, body) for svc_name, body in services_raw.items()
+    }
+    return ResolvedCompose(project_name=name, services=services)
+
+
+def _parse_resolved_service(name: str, body: object) -> ResolvedService:
+    if not isinstance(body, dict):
+        msg = f"Service '{name}' in resolved compose config is not an object."
+        raise ConfigError(msg)
+    container_name = body.get("container_name")
+    volumes = [
+        ResolvedVolume(source=Path(entry["source"]), target=Path(entry["target"]))
+        for entry in body.get("volumes", [])
+        if isinstance(entry, dict)
+        and entry.get("type") == "bind"
+        and isinstance(entry.get("source"), str)
+        and isinstance(entry.get("target"), str)
+    ]
+    return ResolvedService(
+        name=name,
+        container_name=container_name if isinstance(container_name, str) else None,
+        volumes=volumes,
+    )
 
 
 @dataclass

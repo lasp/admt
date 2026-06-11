@@ -217,20 +217,25 @@ def test_env_init_quiet_suppresses_success_output(tmp_path):
     assert "Active project" not in result.output
 
 
-def test_env_init_subprocess_invocation(tmp_path):
-    """Shell-level round trip -- catches packaging/entry-point regressions."""
-    root = _make_project(tmp_path)
+def test_subprocess_invocation(tmp_path):
+    """Shell-level round trip -- catches packaging/entry-point regressions.
+
+    Uses ``env list`` rather than ``env init``: it exercises the real binary,
+    group dispatch, and config load without requiring Docker. ``env init`` now
+    derives compose metadata via ``docker compose config`` (see ARCHITECTURE.md
+    Compose Parsing), so a real-binary init is a tier-3 (Docker) concern.
+    """
     env = {"HOME": str(tmp_path), "PATH": os.environ["PATH"]}
     # Fixed argv (no shell), no untrusted input; uv on PATH is the exact
     # entry-point we want to exercise.
-    result = subprocess.run(  # noqa: S603
-        ["uv", "run", "admt", "env", "init", str(root)],  # noqa: S607
+    result = subprocess.run(
+        ["uv", "run", "admt", "env", "list"],  # noqa: S607
         capture_output=True,
         text=True,
         env=env,
         check=False,
-        cwd=str(root),
+        cwd=str(tmp_path),
         timeout=60,
     )
     assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
-    assert "Registered project 'myproj'" in result.stdout
+    assert "No projects registered" in result.stdout

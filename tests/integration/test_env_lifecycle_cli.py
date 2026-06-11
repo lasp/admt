@@ -59,6 +59,8 @@ def _project_config(root: Path) -> ProjectConfig:
         name="myproj",
         compose_file=root / "docker" / "docker-compose.yml",
         compose_file_mtime=0,
+        env_file=None,
+        env_file_mtime=0,
         service_name="myproj",
         container_name="myproj_container",
         project_root=root,

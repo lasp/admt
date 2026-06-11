@@ -1,18 +1,22 @@
 """Tests for DockerAdapter -- command construction + subprocess orchestration (mocked)."""
 
+import json
 import subprocess
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from admt.adapters.docker import (
     DockerAdapter,
+    ResolvedVolume,
     _active_processes,
     _detect_compose_command,
     _track_subprocess,
     iter_active_pids,
+    resolve_compose_config,
 )
-from admt.exceptions import ContainerError
+from admt.exceptions import ConfigError, ContainerError
 
 SENTINEL_EXIT = 7
 
@@ -481,6 +485,149 @@ def test_track_subprocess_tolerates_already_removed_process():
         _active_processes.remove(fake_proc)
     # Context manager exited cleanly; the process is gone from the registry.
     assert fake_proc not in _active_processes
+
+
+# ----- resolve_compose_config (docker compose config --format json) -----
+
+_RESOLVED_PAYLOAD = {
+    "name": "adamant_example-wt1",
+    "services": {
+        "adamant_example": {
+            "container_name": "adamant_example-wt1_container",
+            "image": "img:0.5",
+            "volumes": [
+                {"type": "bind", "source": "/host/adamant", "target": "/home/user/adamant"},
+                {
+                    "type": "bind",
+                    "source": "/host/wt1/adamant_example",
+                    "target": "/home/user/adamant_example",
+                },
+            ],
+        }
+    },
+}
+
+
+@pytest.fixture
+def compose_file(tmp_path):
+    path = tmp_path / "docker-compose.yml"
+    path.write_text("")
+    return path
+
+
+def test_resolve_compose_config_parses_resolved_metadata(compose_file):
+    with patch(
+        "subprocess.run", return_value=_make_completed(stdout=json.dumps(_RESOLVED_PAYLOAD))
+    ) as run:
+        resolved = resolve_compose_config(compose_file, compose_cmd=["docker", "compose"])
+    assert resolved.project_name == "adamant_example-wt1"
+    svc = resolved.services["adamant_example"]
+    assert svc.container_name == "adamant_example-wt1_container"
+    assert ResolvedVolume(Path("/host/adamant"), Path("/home/user/adamant")) in svc.volumes
+    assert run.call_args.args[0] == [
+        "docker",
+        "compose",
+        "-f",
+        str(compose_file),
+        "config",
+        "--format",
+        "json",
+    ]
+
+
+def test_resolve_compose_config_detects_compose_cmd_when_not_given(compose_file):
+    with (
+        patch(
+            "admt.adapters.docker._detect_compose_command", return_value=["docker", "compose"]
+        ) as detect,
+        patch("subprocess.run", return_value=_make_completed(stdout=json.dumps(_RESOLVED_PAYLOAD))),
+    ):
+        resolve_compose_config(compose_file)
+    detect.assert_called_once()
+
+
+def test_resolve_compose_config_skips_non_bind_and_incomplete_volumes(compose_file):
+    payload = {
+        "name": "p",
+        "services": {
+            "s": {
+                "volumes": [
+                    {"type": "volume", "source": "namedvol", "target": "/data"},
+                    {"type": "bind", "source": "/h/x"},  # missing target
+                    {"type": "bind", "target": "/c/y"},  # missing source
+                    {"type": "bind", "source": "/h/ok", "target": "/c/ok"},
+                    "not-a-dict",
+                ]
+            }
+        },
+    }
+    with patch("subprocess.run", return_value=_make_completed(stdout=json.dumps(payload))):
+        resolved = resolve_compose_config(compose_file, compose_cmd=["docker", "compose"])
+    assert resolved.services["s"].volumes == [ResolvedVolume(Path("/h/ok"), Path("/c/ok"))]
+
+
+def test_resolve_compose_config_container_name_none_when_absent(compose_file):
+    payload = {"name": "p", "services": {"s": {"volumes": []}}}
+    with patch("subprocess.run", return_value=_make_completed(stdout=json.dumps(payload))):
+        resolved = resolve_compose_config(compose_file, compose_cmd=["docker", "compose"])
+    assert resolved.services["s"].container_name is None
+
+
+def test_resolve_compose_config_nonzero_exit_raises(compose_file):
+    with (
+        patch("subprocess.run", return_value=_make_completed(returncode=1, stderr="boom")),
+        pytest.raises(ConfigError, match="boom"),
+    ):
+        resolve_compose_config(compose_file, compose_cmd=["docker", "compose"])
+
+
+def test_resolve_compose_config_nonzero_exit_without_stderr(compose_file):
+    with (
+        patch("subprocess.run", return_value=_make_completed(returncode=1, stderr="")),
+        pytest.raises(ConfigError, match="unknown error"),
+    ):
+        resolve_compose_config(compose_file, compose_cmd=["docker", "compose"])
+
+
+def test_resolve_compose_config_timeout_raises(compose_file):
+    with (
+        patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="x", timeout=60)),
+        pytest.raises(ConfigError, match="timed out"),
+    ):
+        resolve_compose_config(compose_file, compose_cmd=["docker", "compose"])
+
+
+def test_resolve_compose_config_invalid_json_raises(compose_file):
+    with (
+        patch("subprocess.run", return_value=_make_completed(stdout="not json{")),
+        pytest.raises(ConfigError, match="invalid JSON"),
+    ):
+        resolve_compose_config(compose_file, compose_cmd=["docker", "compose"])
+
+
+def test_resolve_compose_config_missing_name_raises(compose_file):
+    with (
+        patch("subprocess.run", return_value=_make_completed(stdout=json.dumps({"services": {}}))),
+        pytest.raises(ConfigError, match="missing 'name' or 'services'"),
+    ):
+        resolve_compose_config(compose_file, compose_cmd=["docker", "compose"])
+
+
+def test_resolve_compose_config_json_not_object_raises(compose_file):
+    with (
+        patch("subprocess.run", return_value=_make_completed(stdout="[1, 2, 3]")),
+        pytest.raises(ConfigError, match="missing 'name' or 'services'"),
+    ):
+        resolve_compose_config(compose_file, compose_cmd=["docker", "compose"])
+
+
+def test_resolve_compose_config_service_not_object_raises(compose_file):
+    payload = {"name": "p", "services": {"s": "not-an-object"}}
+    with (
+        patch("subprocess.run", return_value=_make_completed(stdout=json.dumps(payload))),
+        pytest.raises(ConfigError, match="is not an object"),
+    ):
+        resolve_compose_config(compose_file, compose_cmd=["docker", "compose"])
 
 
 def test_iter_active_pids_reports_running_process(adapter):

@@ -16,6 +16,8 @@ def _project() -> ProjectConfig:
         name="proj",
         compose_file=Path("/sim/proj/docker/docker-compose.yml"),
         compose_file_mtime=0,
+        env_file=None,
+        env_file_mtime=0,
         service_name="svc",
         container_name="proj_container",
         project_root=Path("/sim/proj"),
