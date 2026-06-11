@@ -13,7 +13,7 @@ Before writing anything, read these in full -- in this order. **Skim is not read
 1. [ARCHITECTURE.md](ARCHITECTURE.md) -- what to build. Layers, services, adapters, requirements (R1-R14), exact command templates.
 2. [CODING_RULES.md](CODING_RULES.md) -- how to write the code. Toolchain, type discipline, subprocess rules, error handling, dependencies. The **Agent-Specific Rules** at the end are mandatory and supplement -- not replace -- everything before them.
 3. [TEST_PLAN.md](TEST_PLAN.md) -- how to test. Tiers, fixture strategy, mocking boundaries, quality gate, coverage.
-4. [MVP_PLAN.md](MVP_PLAN.md) -- the phased build history and the post-MVP roadmap. The MVP itself shipped; the **Roadmap (Post-MVP)** section is what's next.
+4. [ROADMAP.md](ROADMAP.md) -- what is not yet built. Capabilities land from here; `TODO(roadmap)` markers in code reference its items.
 
 ## When in doubt: stop and ask
 

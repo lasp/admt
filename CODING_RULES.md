@@ -27,7 +27,7 @@ These rules apply to **all** code contributed to admt, whether written by a huma
 ## Language and Runtime
 
 - **Python 3.14+** is the minimum supported version. Use modern Python features (type unions with `|`, `match` statements, `StrEnum`, etc.) where they improve clarity.
-- **Target platforms:** Linux and macOS for MVP. Windows is not yet a target but will be supported in the future. Do not introduce platform-specific code (e.g., hardcoded `/` separators, Unix-only subprocess flags) that would preclude Windows support. Use `pathlib.Path` for all path operations.
+- **Target platforms:** Linux and macOS. Windows is not yet a target but will be supported in the future. Do not introduce platform-specific code (e.g., hardcoded `/` separators, Unix-only subprocess flags) that would preclude Windows support. Use `pathlib.Path` for all path operations.
 
 ---
 
@@ -385,8 +385,8 @@ class PathNotMappedError(AdmtError):
 
 - **Minimize dependencies.** Every dependency is a maintenance burden and a potential supply chain risk.
 - **Justify every addition.** "It would save a few lines" is not justification. A dependency must solve a problem that is hard to solve correctly in-house.
-- **Approved dependencies:** Click, ruamel.yaml, pykwalify (post-MVP). These are justified by the problem domain.
-- **No framework imports.** admt interacts with the Adamant framework through its public interfaces: CLI commands, schemas, and file conventions. Importing framework internals (e.g., `from gen.models.component import component`) creates coupling that makes admt fragile to framework changes. This is a post-MVP concern but the principle holds now.
+- **Approved dependencies:** Click, ruamel.yaml, pykwalify (for schema validation; see ROADMAP.md). These are justified by the problem domain.
+- **No framework imports.** admt interacts with the Adamant framework through its public interfaces: CLI commands, schemas, and file conventions. Importing framework internals (e.g., `from gen.models.component import component`) creates coupling that makes admt fragile to framework changes.
 - **Pin versions in `pyproject.toml`.** Use `>=X.Y,<X+1` bounds. Do not use unpinned `*` dependencies.
 
 ### `uv.lock` policy
@@ -400,7 +400,7 @@ The recurring failure mode is **uv-version drift**: when a developer's local `uv
 - **Bump `uv.lock` only when dependencies in `pyproject.toml` change** -- a real version bump, a new dep added, a dep removed. Those changes ride together with the lockfile diff in one commit.
 - **Mechanical lockfile churn must be reverted before committing unrelated work.** Standard playbook: when staging a feature change, if `git status` shows `M uv.lock` but you didn't touch `pyproject.toml`, run `git checkout uv.lock` before adding your feature files. The format-only diff doesn't ride along.
 - **Lockfile-format refreshes ship as their own commit/PR.** Title: `chore: refresh uv.lock format under uv X.Y.Z`. One-line body explaining what changed. Reviewer can scan the diff once and confirm it's purely mechanical.
-- **CI pins the uv version** (post-MVP, on `upstream/post-mvp-ci-pipeline`) so CI rewrites are deterministic and don't ping-pong against contributors running a slightly different version locally.
+- **CI pins the uv version** (once the CI pipeline lands; see ROADMAP.md) so CI rewrites are deterministic and don't ping-pong against contributors running a slightly different version locally.
 
 ---
 
@@ -430,23 +430,23 @@ See [TEST_PLAN.md](TEST_PLAN.md) for the full testing strategy. The rules here a
 Agents naturally produce iterative WIP. That iteration belongs in the working tree, not in git history.
 
 - **Do not commit until the [quality gate](TEST_PLAN.md#quality-gate) passes.** Partial work, broken tests, type errors, and lint failures stay uncommitted. Use `git stash` if you need to switch context with dirty state.
-- **Prefer one polished commit per phase** (or per logical sub-step) over a noisy WIP trail. A clean commit history is part of the deliverable -- reviewers should be able to read it linearly without "fix typo", "wip", "address review" entries.
+- **Prefer one polished commit per logical unit of work** (or per coherent sub-step) over a noisy WIP trail. A clean commit history is part of the deliverable -- reviewers should be able to read it linearly without "fix typo", "wip", "address review" entries.
 - **Amending the last commit is acceptable** before push to fold late fixes into the same logical change. Once pushed and reviewed, prefer a follow-up commit.
 
 ### TODO and Placeholder Policy
 
 - **No `TODO`, `FIXME`, `XXX`, or `HACK` markers in committed code.** If something is not done, it does not ship. If it is done but imperfect, refine it now.
-- **The single allowed exception:** `TODO(post-mvp): <one-line description>` referencing a roadmap item in [MVP_PLAN.md](MVP_PLAN.md#roadmap-post-mvp). This is for capabilities the MVP scope deliberately defers, not for unfinished work in the current change.
+- **The single allowed exception:** `TODO(roadmap): <one-line description>` referencing an item in [ROADMAP.md](ROADMAP.md). This is for capabilities deliberately deferred to the roadmap, not for unfinished work in the current change.
 - **No commented-out code.** Delete it. (Already covered in [What Not to Do](#what-not-to-do); restated here because it is the most common form of "TODO via comment".)
 
 ### What to Review Per PR
 
-Each PR is one phase from [MVP_PLAN.md](MVP_PLAN.md) (or one logical sub-step within a phase). Reviewers verify, in this order:
+Each PR is one logical unit of work (a roadmap item, a focused fix, or a coherent sub-step of one). Reviewers verify, in this order:
 
-1. **Spec traceability.** Every change traces to a section of ARCHITECTURE / CODING_RULES / TEST_PLAN / MVP_PLAN. No speculative features, no unrequested refactors.
+1. **Spec traceability.** Every change traces to a section of ARCHITECTURE / CODING_RULES / TEST_PLAN (or an item in ROADMAP.md). No speculative features, no unrequested refactors.
 2. **Quality gate green.** `ruff format --check`, `ruff check`, `mypy src/`, and `pytest --cov --cov-branch --cov-fail-under=100` all pass on the PR head. CI confirms this; reviewers check that CI ran on the latest commit.
 3. **Failure paths covered.** Tests cover the error paths from the [TEST_PLAN.md "What to Test" table](TEST_PLAN.md#what-to-test), not just the happy path.
-4. **No suppression escapes.** No `# noqa` or `# type: ignore` without an adjacent justifying comment (per [Ruff Suppression Policy](#ruff-suppression-policy)), no new `per-file-ignores` entries without justification and reviewer agreement, no `TODO`/`FIXME` markers (except the documented `TODO(post-mvp)` form).
+4. **No suppression escapes.** No `# noqa` or `# type: ignore` without an adjacent justifying comment (per [Ruff Suppression Policy](#ruff-suppression-policy)), no new `per-file-ignores` entries without justification and reviewer agreement, no `TODO`/`FIXME` markers (except the documented `TODO(roadmap)` form).
 5. **History hygiene.** Single logical commit (or a short, clean series), commit message explains *why*, no merge commits from `main` into the feature branch (rebase instead).
 
 ---
@@ -455,7 +455,7 @@ Each PR is one phase from [MVP_PLAN.md](MVP_PLAN.md) (or one logical sub-step wi
 
 These anti-patterns are specifically called out because they are common in agent-generated code:
 
-1. **Do not hardcode YAML field names or structures.** If it is in an Adamant schema, read the schema. If it is not in a schema, it is not admt's concern. (Post-MVP, when schema-driven creation is implemented.)
+1. **Do not hardcode YAML field names or structures.** If it is in an Adamant schema, read the schema. If it is not in a schema, it is not admt's concern. (Applies when schema-driven creation lands; see ROADMAP.md.)
 
 2. **Do not add features beyond what was asked.** A bug fix does not need surrounding code cleaned up. A new command does not need extra configurability that was not requested. Do not add docstrings or type annotations to code you did not change.
 
@@ -481,7 +481,7 @@ These anti-patterns are specifically called out because they are common in agent
 
 These rules apply to AI agents contributing to admt. They supplement -- not replace -- all rules above.
 
-1. **Read these rules before writing any code.** The design documents (ARCHITECTURE.md, CODING_RULES.md, MVP_PLAN.md, TEST_PLAN.md) are the specification. Code that does not trace to the spec is rejected.
+1. **Read these rules before writing any code.** The design documents (ARCHITECTURE.md, CODING_RULES.md, TEST_PLAN.md) are the specification. Code that does not trace to the spec is rejected.
 
 2. **No speculative features.** Every line of code must trace to the design documents. No "improvements" beyond what was asked. No refactoring of code you were not asked to touch.
 
@@ -495,4 +495,4 @@ These rules apply to AI agents contributing to admt. They supplement -- not repl
 
 7. **When in doubt: smaller, simpler, fewer dependencies.** The right answer is almost always less code, not more.
 
-8. **Never modify the spec to match the code unless explicitly asked to do so by a user.** The spec documents (ARCHITECTURE.md, CODING_RULES.md, TEST_PLAN.md) are the contract; the code is the implementation. When the two disagree, the *default* assumption is the code drifted and needs to come back into alignment with the spec -- not the other way around. Quietly editing the spec to "fix the docs" hides the drift, shifts the goal posts mid-flight, and leaves the user with no record of what changed in the implementation. If you find a divergence, surface it (a retro entry, a PR comment, a question to the user) and wait for an explicit "yes, update the spec" before touching the spec doc. The same holds for *any* of MVP_PLAN.md, README.md, or CLAUDE.md when those documents make claims about how the system behaves.
+8. **Never modify the spec to match the code unless explicitly asked to do so by a user.** The spec documents (ARCHITECTURE.md, CODING_RULES.md, TEST_PLAN.md) are the contract; the code is the implementation. When the two disagree, the *default* assumption is the code drifted and needs to come back into alignment with the spec -- not the other way around. Quietly editing the spec to "fix the docs" hides the drift, shifts the goal posts mid-flight, and leaves the user with no record of what changed in the implementation. If you find a divergence, surface it (a retro entry, a PR comment, a question to the user) and wait for an explicit "yes, update the spec" before touching the spec doc. The same holds for *any* of ROADMAP.md, README.md, or CLAUDE.md when those documents make claims about how the system behaves.

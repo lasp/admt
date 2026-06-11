@@ -152,12 +152,11 @@ def _context_attribute_assignments(filepath: Path) -> list[tuple[int, str]]:
 def test_only_cli_and_context_assign_to_context_attributes():
     """Only ``cli.py`` and ``context.py`` may assign to Context attributes.
 
-    Catches the anti-pattern that motivated Q5 in MVP_RETRO.md: a "build a
-    service" function (``bootstrap.build_container_service``) silently
-    mutated ``context.path_mapper`` as a side effect of returning a
-    ContainerService. The function's return-type signature lied about
-    what it did. Any future regression of that pattern (in services/,
-    commands/, adapters/, or bootstrap.py) trips this test.
+    Guards against hidden side effects: a function that returns one object
+    while also mutating ``context`` (e.g., a builder assigning
+    ``context.path_mapper`` on the way to returning a ContainerService) has
+    a signature that lies about what it does. Any such mutation in
+    services/, commands/, adapters/, or bootstrap.py trips this test.
 
     ``context.py`` is allowed because ``Context.resolve_container_path``
     is a method on the dataclass itself; ``cli.py`` is allowed because
@@ -173,8 +172,7 @@ def test_only_cli_and_context_assign_to_context_attributes():
             violations.append(f"{relative}:{lineno}  assigns to context.{attr}")
     assert not violations, (
         "Context attributes may only be assigned in cli.py and context.py. "
-        "Other files must not mutate Context as a side effect "
-        "(see Q5 in MVP_RETRO.md):\n  " + "\n  ".join(violations)
+        "Other files must not mutate Context as a side effect:\n  " + "\n  ".join(violations)
     )
 
 

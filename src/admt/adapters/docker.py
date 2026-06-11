@@ -468,7 +468,7 @@ class DockerAdapter:
         lines) but we stream them out as they arrive -- no full-buffer
         capture. ``bufsize=1`` makes Python line-buffer its read side; the
         child process may still block-buffer under piping since its stdout
-        is no longer a TTY. For MVP the tradeoff favors simplicity over a
+        is no longer a TTY. The tradeoff favors simplicity over a
         pseudo-terminal; redo's bash-based progress lines line-buffer
         naturally and arrive promptly in practice.
 
