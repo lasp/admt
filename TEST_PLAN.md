@@ -63,7 +63,7 @@ A test that finds itself patching `subprocess.run` is in the wrong tier or mocki
 
 ## Quality Gate
 
-Every phase, every PR, and every CI run pass the same four checks:
+Every commit, every PR, and every CI run pass the same four checks:
 
 ```bash
 ruff format --check src/ tests/
@@ -72,7 +72,7 @@ mypy src/
 pytest --cov --cov-branch --cov-fail-under=100
 ```
 
-This is the **non-negotiable bar**. A phase is not complete, a PR is not ready, and CI does not pass unless all four succeed. During the MVP itself there is no CI -- the local run is the only gate. Once the post-MVP CI pipeline lands ([MVP_PLAN.md §Next Up: CI Pipeline and Packaging](MVP_PLAN.md#next-up-ci-pipeline-and-packaging)), the same four commands will run in GitHub Actions, and developers and agents will be able to rehearse the CI run locally with [`act`](https://github.com/nektos/act) before pushing.
+This is the **non-negotiable bar**. A PR is not ready unless all four succeed. There is no CI pipeline yet -- the local run is the gate. When the CI pipeline lands ([ROADMAP.md](ROADMAP.md)), the same four commands will run in GitHub Actions, and developers and agents will be able to rehearse the CI run locally with [`act`](https://github.com/nektos/act) before pushing.
 
 `pytest --cov --cov-fail-under=100` enforces the 100% coverage threshold from [Coverage](#coverage); it is part of the gate, not an optional extra.
 

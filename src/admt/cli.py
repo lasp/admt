@@ -309,7 +309,7 @@ def publish(admt_ctx: Context, path_or_target: str | None, *, run_all: bool) -> 
     _run_command(PublishCommand(), admt_ctx)
 
 
-# Passthrough aliases -- keep in sync with MVP_PLAN Phase 3 command table.
+# Passthrough aliases -- keep in sync with the Command Reference table in ARCHITECTURE.md.
 cli.add_alias("b", "build")
 cli.add_alias("w", "what")
 cli.add_alias("t", "test")

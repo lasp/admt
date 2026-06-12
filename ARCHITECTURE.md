@@ -2,7 +2,7 @@
 
 This document defines the internal architecture of admt. It is the authoritative reference for how the system is structured, how components interact, and what rules govern dependencies. Code examples are illustrative starting points -- not gospel -- and should be adapted as implementation proceeds. The architectural *principles* and *dependency rules* are non-negotiable.
 
-Together with CODING_RULES.md, MVP_PLAN.md, and TEST_PLAN.md, it defines what admt does and how it is built. Implementation must trace to these documents. Changes to behavior, interfaces, or structure require a design amendment here first -- not just a code change.
+Together with CODING_RULES.md and TEST_PLAN.md, it defines what admt does and how it is built. ROADMAP.md lists what is not yet built. Implementation must trace to these documents. Changes to behavior, interfaces, or structure require a design amendment here first -- not just a code change.
 
 ## Table of Contents
 
@@ -21,6 +21,7 @@ Together with CODING_RULES.md, MVP_PLAN.md, and TEST_PLAN.md, it defines what ad
 - [ANSI Color Handling](#ansi-color-handling)
 - [TTY and Stdin Handling](#tty-and-stdin-handling)
 - [Behavioral Details](#behavioral-details)
+- [Command Reference](#command-reference)
 - [Non-Goals](#non-goals)
 - [Plugin System (Roadmap)](#plugin-system-roadmap)
 - [How This Scales](#how-this-scales)
@@ -63,9 +64,9 @@ Every choice that can be made through an interactive wizard must also be express
 
 Commands that produce or modify files succeed or fail as a unit. All file writes go to a temporary staging directory (e.g., `/tmp/admt-xxx/`). Files are moved to their final destination only after all generation and validation succeeds. If any step fails, nothing is written and the working directory is left unchanged.
 
-### R7. Build-Path Aware (Post-MVP)
+### R7. Build-Path Aware (Roadmap)
 
-admt respects Adamant's build path conventions (`.all_path` marker files, `BUILD_PATH`, `BUILD_ROOTS`) and the directory structure that redo and the generators expect. For the MVP, these are handled entirely by the container. Post-MVP `admt create` commands will create `.all_path` markers in generated directories.
+admt respects Adamant's build path conventions (`.all_path` marker files, `BUILD_PATH`, `BUILD_ROOTS`) and the directory structure that redo and the generators expect. Today these are handled entirely by the container. The `admt create` commands (ROADMAP.md) will create `.all_path` markers in generated directories.
 
 ### R8. Convention-Conforming
 
@@ -194,8 +195,8 @@ src/
       config.py                # Project registry, active project, ~/.admt/
       path_mapper.py           # Host <-> container path mapping
       output.py                # Structured output formatting
-      schema.py                # Schema discovery, validation (post-MVP)
-      filesystem.py            # Staged atomic file operations (post-MVP)
+      schema.py                # Schema discovery, validation (roadmap)
+      filesystem.py            # Staged atomic file operations (roadmap)
 
     adapters/                  # External system wrappers
       __init__.py
@@ -203,7 +204,7 @@ src/
       redo.py                  # redo command-string builder
       redo_output.py           # Rewrite redo output into admt vocabulary
       yaml_adapter.py          # YAML reading/writing (ruamel.yaml)
-      pykwalify_adapter.py     # Schema validation (post-MVP)
+      pykwalify_adapter.py     # Schema validation (roadmap)
 
 tests/
   unit/                        # Fast, no Docker required
@@ -212,7 +213,7 @@ tests/
     adapters/
     test_architecture.py       # Layer rules + Context-mutation lint
   integration/                 # Shell calls to admt CLI
-  container/                   # Full pipeline against real container (post-MVP)
+  container/                   # Full pipeline against real container (roadmap)
   conftest.py                  # Shared fixtures
 
 pyproject.toml
@@ -470,7 +471,7 @@ This is intentionally observable state (R11), not hidden: `admt env status` repo
 
 ## Container Passthrough
 
-This is the core mechanism for MVP. All build-related commands (`build`, `test`, `style`, `what`, `clean`, `prove`, `coverage`, `publish`, `templates`) work the same way:
+This is the core passthrough mechanism. All build-related commands (`build`, `test`, `style`, `what`, `clean`, `prove`, `coverage`, `publish`, `templates`) work the same way:
 
 ### Compose vs. plain Docker
 
@@ -767,7 +768,7 @@ Functions cannot declare metadata, cannot be discovered by a plugin loader, and 
 
 ### Container Passthrough Commands
 
-Most MVP commands share the same pattern: map path, exec redo in container, stream output. A base class captures this:
+Most passthrough commands share the same pattern: map path, exec redo in container, stream output. A base class captures this:
 
 ```python
 class ContainerPassthroughCommand(Command):
@@ -998,9 +999,9 @@ class OutputService:
         ...
 ```
 
-### Schema Service (Post-MVP)
+### Schema Service (Roadmap)
 
-For future schema-driven creation and validation. Not implemented in MVP.
+For future schema-driven creation and validation. Not yet implemented.
 
 ```python
 class SchemaService:
@@ -1011,7 +1012,7 @@ class SchemaService:
     def get_fields(self, model_type: str) -> list[FieldInfo]: ...
 ```
 
-### Filesystem Service (Post-MVP)
+### Filesystem Service (Roadmap)
 
 For future atomic file creation operations.
 
@@ -1136,10 +1137,10 @@ When the user sends SIGINT (Ctrl+C) during a container-forwarded operation:
 
 1. admt catches SIGINT.
 2. admt sends SIGINT to the in-flight `docker exec` (or `docker compose ...`) subprocess (best-effort propagation).
-3. admt prints the PIDs of any in-flight subprocesses so the user can manually `kill -9` them if needed. Obtaining the PID of the process *inside* the container is non-trivial; for MVP, the host-side PID is sufficient.
+3. admt prints the PIDs of any in-flight subprocesses so the user can manually `kill -9` them if needed. Obtaining the PID of the process *inside* the container is non-trivial; the host-side PID is sufficient.
 4. admt exits with code 130.
 
-This is best-effort for MVP. The host-side `docker` subprocess receives the signal, but the process inside the container (e.g., redo) may survive if `docker exec` simply disconnects. Printing the PID gives the user a fallback.
+This is best-effort. The host-side `docker` subprocess receives the signal, but the process inside the container (e.g., redo) may survive if `docker exec` simply disconnects. Printing the PID gives the user a fallback.
 
 ---
 
@@ -1221,11 +1222,11 @@ The container's `.bashrc` already sources `env/activate` (or the cached snapshot
 
 ### Shell Completion Scope
 
-MVP shell completion covers command names, subcommands, and flags. Tab-completing paths and component names from the project is deferred to post-MVP (requires project-aware completion functions).
+Shell completion covers command names, subcommands, and flags. Tab-completing paths and component names from the project requires project-aware completion functions (ROADMAP.md).
 
 ### Graceful Degradation Without Container
 
-For post-MVP commands that could partially operate on the host (e.g., `admt create component` generating YAML without needing the container, but needing it for `redo templates`), admt uses a staged approach: perform all host-side work in a temp directory, then forward container-required steps. If the container is unavailable, admt can complete the host-side portion and report what remains:
+For roadmap commands that could partially operate on the host (e.g., `admt create component` generating YAML without needing the container, but needing it for `redo templates`), admt uses a staged approach: perform all host-side work in a temp directory, then forward container-required steps. If the container is unavailable, admt can complete the host-side portion and report what remains:
 
 ```
 Created YAML models in /tmp/admt-xxx/src/components/foo/
@@ -1235,6 +1236,40 @@ Container is not running. Run `admt env start` then `admt templates` to generate
 ### Version
 
 The canonical version string lives in `src/admt/__init__.py` as `__version__`. `pyproject.toml` reads it dynamically. `admt --version` prints it.
+
+---
+
+## Command Reference
+
+Complete list of commands with their redo equivalents:
+
+| admt Command | Alias | Redo Equivalent | Container? | Notes |
+|-------------|-------|-----------------|------------|-------|
+| `admt env init [path]` | `admt e init` | N/A | No | Register project, verify markers, derive resolved compose config |
+| `admt env use <name>` | `admt e use` | N/A | No | Switch active project (this terminal now; default for new terminals) |
+| `admt env start` | `admt e start` | N/A | No | Auto-pull if needed, `docker compose up -d` + activate |
+| `admt env stop` | `admt e stop` | N/A | No | `docker compose stop` |
+| `admt env restart` | `admt e restart` | N/A | No | stop + start |
+| `admt env login` | `admt e login` | N/A | Yes | Interactive bash shell (env activated via .bashrc) |
+| `admt env status` | `admt e status` | N/A | No | Project, its source, container state |
+| `admt env build` | `admt e build` | N/A | No | `docker compose build` |
+| `admt env push` | `admt e push` | N/A | No | `docker compose push` |
+| `admt env pull` | `admt e pull` | N/A | No | `docker compose pull` |
+| `admt env exec <cmd>` | `admt e exec` | N/A | Yes | Exec through proxy script; TTY auto-detected |
+| `admt env refresh` | `admt e refresh` | N/A | Yes | Re-run activate + rebuild snapshot |
+| `admt env list` | `admt e list` | N/A | No | List registered projects (`*` = this terminal's active) |
+| `admt env rm` | `admt e rm` | N/A | No | Remove container (`--volumes`, `--image`, `--remove-all`) |
+| `admt build [path]` | `admt b` | `redo all` or `redo <target>` | Yes | Default: all in cwd |
+| `admt what [path]` | `admt w` | `redo what` | Yes | List buildable targets |
+| `admt test [path]` | `admt t` | `redo test` | Yes | `--all` / `-a` for `redo test_all` |
+| `admt style [path]` | `admt s` | `redo style` | Yes | `--all` / `-a` for `redo style_all` |
+| `admt analyze [path]` | `admt an` | `redo analyze` | Yes | `--all` / `-a` for `redo analyze_all` |
+| `admt clean [path]` | `admt cl` | `redo clean` | Yes | `--all` / `-a` for `redo clean_all` |
+| `admt prove [path]` | `admt p` | `redo prove` | Yes | SPARK formal verification |
+| `admt coverage [path]` | `admt cov` | `redo coverage` | Yes | `--all` / `-a` for `redo coverage_all` |
+| `admt publish [path]` | `admt pub` | `redo publish` | Yes | `--all` / `-a` for `redo publish_all` |
+| `admt templates [path]` | `admt tmpl` | `redo templates` | Yes | + optional stub copy |
+| `admt templates --undo` | `admt tmpl --undo` | N/A | No | Restore from last backup |
 
 ---
 
@@ -1253,7 +1288,7 @@ admt is not:
 
 ## Plugin System (Roadmap)
 
-Not part of MVP, but the architecture is designed to support it. Plugins are Python packages that register commands via entry points:
+Not yet implemented, but the architecture is designed to support it. Plugins are Python packages that register commands via entry points:
 
 ```toml
 # In a plugin's pyproject.toml
