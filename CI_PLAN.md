@@ -2,7 +2,7 @@
 
 This document specifies how admt's continuous-integration pipeline implements the testing strategy from [TEST_PLAN.md](TEST_PLAN.md), the architectural guarantees from [ARCHITECTURE.md](ARCHITECTURE.md), and the authoring rules from [CODING_RULES.md](CODING_RULES.md). It is a planning spec, not a runbook -- the runbook recipes for [`act`](https://github.com/nektos/act) live further down because the rehearsal story is a first-class concern of the design.
 
-The MVP shipped without CI. The local four-command gate ([TEST_PLAN.md §Quality Gate](TEST_PLAN.md#quality-gate)) was the only gate, and it held: full line + branch coverage, ruff/mypy clean. CI exists to close the gaps the local gate cannot solve: spec-vs-implementation drift, drift between code and CI itself, lockfile churn, and the merge-as-test problem where independently-green PRs are not validated as a coherent whole until after they land.
+admt has no CI today. The local four-command gate ([TEST_PLAN.md §Quality Gate](TEST_PLAN.md#quality-gate)) is the only gate, and it has held: full line + branch coverage, ruff/mypy clean. CI exists to close the gaps the local gate cannot solve: spec-vs-implementation drift, drift between code and CI itself, lockfile churn, and the merge-as-test problem where independently-green PRs are not validated as a coherent whole until after they land.
 
 This plan is the spec for the CI implementation that follows. Like every admt spec doc, code that does not trace to this document is rejected; behavior that diverges from this document is a defect to either fix in the workflow or amend here first -- not both, and not silently.
 
@@ -16,8 +16,8 @@ This plan is the spec for the CI implementation that follows. Like every admt sp
 - [Workflow Architecture](#workflow-architecture)
 - [Workflow: gate.yml](#workflow-gateyml)
 - [Workflow: container.yml](#workflow-containeryml)
-- [Workflow: release.yml (post-MVP)](#workflow-releaseyml-post-mvp)
-- [Workflow: upstream.yml (post-MVP)](#workflow-upstreamyml-post-mvp)
+- [Workflow: release.yml (Roadmap)](#workflow-releaseyml-roadmap)
+- [Workflow: upstream.yml (Roadmap)](#workflow-upstreamyml-roadmap)
 - [act Rehearsal Protocol](#act-rehearsal-protocol)
 - [Tier 3 Fixture Strategy](#tier-3-fixture-strategy)
 - [Per-Command Coverage Matrix](#per-command-coverage-matrix)
@@ -40,15 +40,15 @@ This plan is the spec for the CI implementation that follows. Like every admt sp
 
 ## Why CI Now
 
-The MVP retros named four problems the local gate is structurally unable to solve. Each one is a specific failure mode CI is designed to catch:
+The project retrospectives named four problems the local gate is structurally unable to solve. Each one is a specific failure mode CI is designed to catch:
 
-1. **Spec-vs-implementation drift is invisible until tier 3 runs.** Tier 1+2 tests pin on exception classes; the user-facing exit code is observable only by running the real binary. Several exit-code mismatches were latent for the entire MVP because no tier-1 test pinned on the user-facing exit code, and no tier-3 suite existed to catch the discrepancy at the binary boundary. CI is where tier 3 finally runs continuously.
+1. **Spec-vs-implementation drift is invisible until tier 3 runs.** Tier 1+2 tests pin on exception classes; the user-facing exit code is observable only by running the real binary. Several exit-code mismatches stayed latent for the whole pre-CI period because no tier-1 test pinned on the user-facing exit code, and no tier-3 suite existed to catch the discrepancy at the binary boundary. CI is where tier 3 finally runs continuously.
 
 2. **Single-day batch-merge made the merge itself the test.** Multiple PRs landed in the same window, each independently green, but the post-merge state on `main` was not validated as a single coherent run before the merges. CI on every push to `main` provides exactly that validation -- a clean checkout of the merged tip, the four-command gate, and the tier-3 sweep, with no developer-machine state in the picture.
 
 3. **`uv.lock` churn slips into unrelated PRs.** Mechanical lockfile rewrites from uv-version drift have polluted the history more than once. The `uv.lock` policy paragraph is in [CODING_RULES.md §uv.lock policy](CODING_RULES.md#uvlock-policy); CI is where the policy gets *enforced*, by pinning the `uv` version that runs the gate so the reference rewrite is deterministic.
 
-4. **The act + Docker-Desktop interaction is non-obvious.** The post-MVP CI work needs to be act-rehearsable locally. That is not free: act under Docker Desktop refuses to bind-mount the desktop socket into the runner unless File Sharing is configured, and the same docker-compose paths that work on cloud GHA need a specific fixture layout to work under act's `--bind` mode. The recipes -- and the boundary between "this works locally" and "this only works on cloud GHA" -- belong in this document, not in tribal knowledge.
+4. **The act + Docker-Desktop interaction is non-obvious.** This CI work must be act-rehearsable locally. That is not free: act under Docker Desktop refuses to bind-mount the desktop socket into the runner unless File Sharing is configured, and the same docker-compose paths that work on cloud GHA need a specific fixture layout to work under act's `--bind` mode. The recipes -- and the boundary between "this works locally" and "this only works on cloud GHA" -- belong in this document, not in tribal knowledge.
 
 This list is also the test plan for whether CI is doing its job. If a future drift slips through CI without being caught here, that is a CI gap, not a development gap.
 
@@ -66,7 +66,7 @@ This list is also the test plan for whether CI is doing its job. If a future dri
 - **Toolchain pinning** for `uv`, the Python interpreter, the Adamant container image, and any GitHub Actions third-party action versions.
 - **Failure forensics** -- every failure produces an artifact bundle with provenance metadata (commit SHA, run ID, branch, OS) and human-navigable HTML reports.
 
-### Post-MVP (in scope to *describe* here, not to land in the initial CI surface)
+### Roadmap (in scope to *describe* here, not to land in the initial CI surface)
 
 - **PyPI publishing on release** -- `uv build`, `uv publish`, attestations.
 - **ARM64 verification on release** -- echo the Adamant ecosystem pattern (`test_all_arm64.yml`).
@@ -80,7 +80,7 @@ This list is also the test plan for whether CI is doing its job. If a future dri
 - **No relaxation of the local gate.** CI does not enforce a *different* bar than the one developers see locally; it enforces the *same* bar from a clean machine. A change that passes CI but fails the local gate is broken.
 - **No hidden CI-only commands.** Anything CI runs is either (a) one of the four gate commands, (b) `pytest -m container` for tier 3, (c) a documented packaging command. No bespoke "CI thinks the gate is X" pseudo-checks.
 - **No new top-level directory.** Workflow files live in `.github/workflows/`. CI helper assets live in `tests/ci_assets/`. There is no `ci/` or `scripts/` top-level directory.
-- **No Windows runners for MVP CI.** Per [CODING_RULES.md §Language and Runtime](CODING_RULES.md#language-and-runtime), Windows is not yet a target. CI matches the spec.
+- **No Windows runners.** Per [CODING_RULES.md §Language and Runtime](CODING_RULES.md#language-and-runtime), Windows is not yet a target. CI matches the spec.
 
 ---
 
@@ -123,7 +123,7 @@ Every external version that affects the gate is pinned:
 
 - `uv` -- pinned in `.uv-version` and read by both the workflow and contributors.
 - Python -- pinned in `.python-version` (existing).
-- Adamant container image -- pinned by tag (e.g., `ghcr.io/lasp/adamant:0.2`), not `:latest`.
+- Adamant container image -- pinned by tag (the `ADAMANT_TAG` value from `tests/container/_pins.env`), not `:latest`.
 - Third-party GitHub Actions -- pinned to a full SHA with a comment (`org/action@<sha>  # vX.Y.Z`).
 
 Renovate or Dependabot handles version bumps via PR; CI itself does nothing dynamic.
@@ -136,12 +136,12 @@ There is no `[skip ci]` short-circuit. There is no "trivial change" branch prote
 
 Every failed run uploads enough artifact for forensic diagnosis without a re-run:
 
-- Coverage HTML and XML.
+- Coverage HTML (themed; see [Artifacts and Provenance](#artifacts-and-provenance)) and XML.
 - JUnit XML from pytest, with a rendered summary on the PR's checks tab.
 - The `docker compose logs` and `docker inspect` of the test container on tier-3 failures.
-- A unified `index.html` artifact bundle linking the above, with a provenance banner naming the commit SHA, branch/PR, GitHub run ID, OS, and run timestamp.
+- Provenance: the container job ships a `versions.txt` (commit SHA, pins, image digest, OS, timestamp); the gate's provenance is the workflow run's own metadata.
 
-Retention 14 days. Artifact names are stable so links from PR comments do not rot. Theme: dark mode with admt's signature gold (`#CFB87C`) accent on actionable elements -- see [Artifacts and Provenance](#artifacts-and-provenance).
+Retention 14 days. Artifact names are stable so links from PR comments do not rot.
 
 ### CI9. Drift-Prevention Guards
 
@@ -161,9 +161,9 @@ Four workflow files, each with one purpose. A change to one workflow does not re
 .github/
   workflows/
     gate.yml          # Tier 1+2: ruff format, ruff check, mypy, pytest -m "not container"
-    container.yml     # Tier 3: pytest -m container, against ghcr.io/lasp/adamant:0.2
-    release.yml       # Post-MVP: build wheel + publish to PyPI on release
-    upstream.yml      # Post-MVP: weekly tier 3 against latest Adamant image
+    container.yml     # Tier 3: pytest -m container, against the pinned Adamant image
+    release.yml       # Roadmap: build wheel + publish to PyPI on release
+    upstream.yml      # Roadmap: weekly tier 3 against latest Adamant image
 ```
 
 ### Concurrency
@@ -218,7 +218,7 @@ strategy:
     os: [ubuntu-24.04, macos-14]
 ```
 
-`fail-fast: false` so a Linux failure doesn't hide a separate macOS failure. Both must pass. [CODING_RULES.md §Language and Runtime](CODING_RULES.md#language-and-runtime) names Linux + macOS as the MVP target platforms; CI matches the spec.
+`fail-fast: false` so a Linux failure doesn't hide a separate macOS failure. Both must pass. [CODING_RULES.md §Language and Runtime](CODING_RULES.md#language-and-runtime) names Linux + macOS as the target platforms; CI matches the spec.
 
 ### Steps (high level)
 
@@ -230,9 +230,9 @@ strategy:
 6. **Run gate command 3**: `uv run mypy src/`.
 7. **Run gate command 4**: `uv run pytest --cov --cov-branch --cov-fail-under=100 --junitxml=gate-junit.xml -m "not container"`.
 8. **Generate themed coverage HTML** (always) -- `uv run coverage html --extra-css tests/ci_assets/admt-dark.css --title "admt coverage @ ${SHORT_SHA}"`.
-9. **Render unified `index.html`** (always) -- `python tests/ci_assets/render_summary.py` (see [Artifacts and Provenance](#artifacts-and-provenance)).
-10. **Upload artifact bundle** (always) -- `actions/upload-artifact@v7` with everything in `_artifacts/` (HTML index, coverage HTML, coverage XML, JUnit XML, log tail). Name: `gate-${{ matrix.os }}-${{ github.run_id }}`.
-11. **Post step summary** (always) -- a tabular summary on `$GITHUB_STEP_SUMMARY` with gate command results, coverage %, and a link to the unified index inside the artifact.
+9. **Surface per-test results** (always) -- `mikepenz/action-junit-report` posts the JUnit XML as a check-run (see [Artifacts and Provenance](#artifacts-and-provenance)); skipped under act.
+10. **Upload artifact bundle** (always) -- `actions/upload-artifact@v4` with everything in `_artifacts/` (coverage HTML, coverage XML, JUnit XML, log tail). Name: `gate-${{ matrix.os }}-${{ github.sha }}`.
+11. **Post step summary** (always) -- a tabular summary on `$GITHUB_STEP_SUMMARY` with gate command results, coverage %, and a link to the artifact.
 
 ### Job-Level Configuration
 
@@ -249,6 +249,8 @@ jobs:
 ### act Compatibility
 
 `act -j gate` runs this workflow locally on Linux. The macOS leg cannot be rehearsed under act (act runs Linux containers). All steps are act-compatible because the gate does not need a Docker daemon. See [Recipe: gate](#recipe-gate).
+
+The docker-free property is load-bearing and deliberate: tier 1+2 inject a fake compose resolver, so the only places that shell `docker compose config` are `env init`/`env refresh` at runtime (and therefore tier 3). A unit or integration test that invokes the real resolver would silently make the gate require a docker CLI -- treat that as a defect, not a dependency to install on the runner.
 
 ---
 
@@ -278,14 +280,14 @@ The job logic is *not* inlined into the workflow YAML; it is implemented as a ho
 The workflow's job is therefore short:
 
 1. Set up `uv` and the Python interpreter (same step as gate.yml).
-2. `uv tool install --python 3.14 --reinstall --editable .` -- install admt onto PATH.
+2. `uv tool install --python "$(cat .python-version)" --reinstall --editable .` -- install admt onto PATH (the interpreter version reads the pin file, per [Toolchain Pinning](#toolchain-pinning)).
 3. `bash tests/container/run.sh` -- the host script does everything else:
-   - Pulls `ghcr.io/lasp/adamant:0.2` (idempotent; `actions/cache@v5` keyed on the image digest amortizes pulls).
+   - Pulls `ghcr.io/lasp/adamant:${ADAMANT_TAG}` (idempotent; `actions/cache@v5` keyed on the image digest amortizes pulls).
    - Bootstraps `tests/container/_workspace/adamant/` by cloning `https://github.com/lasp/adamant.git` at a pinned ref (or symlinking a local checkout if `ADMT_LOCAL_ADAMANT=<path>` is set; see [Tier 3 Fixture Strategy](#tier-3-fixture-strategy)).
    - Runs `pytest tests/container/ -m container --junitxml=container-junit.xml`.
    - On failure, dumps `docker compose ... logs` and `docker inspect` for every container the suite touched into `_artifacts/container-logs/`.
-4. Render unified `index.html` (always) -- same renderer as gate.yml, themed.
-5. Upload artifact bundle.
+4. Surface per-test results (always) -- same JUnit check-run step as gate.yml.
+5. Upload artifact bundle (`container-${{ matrix.project }}-${{ github.sha }}`).
 
 ### Configuration Matrix
 
@@ -325,7 +327,7 @@ jobs:
 
 ---
 
-## Workflow: release.yml (post-MVP)
+## Workflow: release.yml (Roadmap)
 
 Build the admt wheel, publish it to PyPI, and verify ARM64 on release. Implements *after* gate.yml and container.yml are stable on `main`.
 
@@ -344,7 +346,7 @@ on:
 2. **container-release** -- re-runs tier 3 against the release tag's tip. Blocks publish on failure.
 3. **build-wheel** -- `uv build` on `ubuntu-24.04`. Produces `dist/admt-X.Y.Z-py3-none-any.whl` and `dist/admt-X.Y.Z.tar.gz`. Uploads both as artifacts.
 4. **publish-pypi** -- `pypa/gh-action-pypi-publish@release/v1` with trusted publishing (no API token in secrets). `needs: [gate-release, container-release, build-wheel]`. Skipped under act (`if: ${{ !env.ACT }}`).
-5. **arm64-verification** -- `docker/setup-qemu-action@v4` + `linux/arm64` execution of the wheel against `ghcr.io/lasp/adamant:0.2-arm64`. Echoes `adamant/.github/workflows/test_all_arm64.yml`. Advisory-only for the first published release; required-blocking once the first arm64 admt user emerges.
+5. **arm64-verification** -- `docker/setup-qemu-action@v4` + `linux/arm64` execution of the wheel against `ghcr.io/lasp/adamant:${ADAMANT_TAG}-arm64`. Echoes `adamant/.github/workflows/test_all_arm64.yml`. Advisory-only for the first published release; required-blocking once the first arm64 admt user emerges.
 
 ### act Compatibility
 
@@ -352,7 +354,7 @@ Build-wheel runs under act. publish-pypi is skipped (`!env.ACT`). gate-release a
 
 ---
 
-## Workflow: upstream.yml (post-MVP)
+## Workflow: upstream.yml (Roadmap)
 
 Weekly verification that admt still works against the latest Adamant container.
 
@@ -482,7 +484,7 @@ What happens inside:
 1. `tests/container/run.sh` sees `ADMT_LOCAL_ADAMANT` set and creates a symlink `tests/container/_workspace/adamant -> $ADMT_LOCAL_ADAMANT` instead of cloning.
 2. The symlink lives in the bind-mounted admt workspace, so it appears at the same path on host and runner.
 3. The bind-mount from `--container-options` makes the symlink target also valid on both sides.
-4. `admt env init` resolves the symlink, parses the *live* `docker-compose.yml`, and registers volume mounts pointing at the live host path.
+4. `admt env init` resolves the symlink and derives the *live* compose configuration via `docker compose config` (loading any colocated `.env`), registering volume mounts that point at the live host path.
 5. `admt env start` tells the host Docker daemon to bind the live path into the Adamant container -- the daemon resolves the path on the host, where it really exists.
 6. Tests exercise admt against the developer's actual in-progress Adamant changes.
 
@@ -662,17 +664,18 @@ In live mode, the test suite mutates the symlinked Adamant tree (build artifacts
 
 #### Pin-Override-Mode Caveats
 
-Pin-override mode (e.g., `ADAMANT_REF=main`) clones a *different* Adamant source than the container at `:${ADAMANT_TAG}` was built from. A test that depends on source-vs-binary parity (e.g., expects a specific `redo what` output that matches a specific source revision) may behave inconsistently. The expected behavior for this mode is the same as for the upstream contract test job ([upstream.yml](#workflow-upstreamyml-post-mvp)): tier 3 is allowed to fail, and the failure is the signal that upstream has moved.
+Pin-override mode (e.g., `ADAMANT_REF=main`) clones a *different* Adamant source than the container at `:${ADAMANT_TAG}` was built from. A test that depends on source-vs-binary parity (e.g., expects a specific `redo what` output that matches a specific source revision) may behave inconsistently. The expected behavior for this mode is the same as for the upstream contract test job ([upstream.yml](#workflow-upstreamyml-roadmap)): tier 3 is allowed to fail, and the failure is the signal that upstream has moved.
 
 ### conftest.py Responsibilities
 
 `tests/container/conftest.py` exposes session-scoped fixtures that:
 
+- Point admt at a scratch config home for the whole session (a temp `HOME`), so the suite's registrations and per-terminal session state never touch the developer's real `~/.admt` during local rehearsal -- `config.yml` and `sessions.yml` are both live state now, and polluting them from a test run is not acceptable.
 - Locate the Adamant clone (see [Project Resolution Order](#project-resolution-order) below for the four-mode lookup).
-- Register the project: `subprocess.run(["admt", "env", "init", <path>])`.
+- Register the project: `subprocess.run(["admt", "env", "init", <path>])`. Registration shells `docker compose config`, so the docker CLI must be present -- a given on the tier-3 runner, and verified for the act runner image (see [Appendix D](#appendix-d-act-capability-matrix-verified)).
 - Start the container: `admt env start`.
 - Yield component-scoped fixtures (see [Component Coverage Requirements](#component-coverage-requirements) below).
-- Teardown: `admt env stop` + remove the registration.
+- Teardown: `admt env stop`; the scratch config home is discarded with the session.
 
 The fixture is **session-scoped** so the container starts once per pytest run, not once per test. Tests that mutate state restore it (e.g., a test that changes the active project switches it back).
 
@@ -683,11 +686,11 @@ The conftest looks for the Adamant project in this order (first match wins):
 1. **`ADMT_LOCAL_ADAMANT`** -- developer override pointing at a live local checkout (anywhere on the filesystem). Symlinked into `_workspace/adamant`.
 2. **`ADMT_TIER3_PROJECT`** -- explicit absolute path to a registered admt project root. CI sets this to the freshly cloned, pinned Adamant.
 3. **Pinned clone in `_workspace/adamant/`** -- if `tests/container/_workspace/adamant/` exists with a `.git/` directory, use it. Bootstrapped by `tests/container/run.sh`.
-4. **Active project's Adamant volume mount** -- when none of the above resolve, parse the active project's `docker-compose.yml` for a volume whose target is `/home/user/adamant` and use the resolved host source path. This is the "adjacent siblings" model: a developer with admt and Adamant checked out under a common parent dir, plus an admt-registered downstream project (e.g., a mission FSW repo) gets tier 3 working with no env var setup.
+4. **Active project's Adamant volume mount** -- when none of the above resolve, read the active project's *resolved* volume mounts (admt's cached config, derived at registration via `docker compose config`) for a mount whose target is `/home/user/adamant`, and use its host source path. This is the "adjacent siblings" model: a developer with admt and Adamant checked out under a common parent dir, plus an admt-registered downstream project (e.g., a mission FSW repo) gets tier 3 working with no env var setup.
 
-If none resolve to a valid directory, every tier 3 test skips with a clear message rather than fails. The fallback is path-discovered, never hardcoded -- the conftest reads the compose file's volume mounts to find Adamant, so any layout the user adopts (sibling dirs, a workspace dir, an entirely different filesystem location) works as long as the docker-compose.yml is consistent.
+If none resolve to a valid directory, every tier 3 test skips with a clear message rather than fails. The fallback is path-discovered, never hardcoded -- the conftest reads the project's resolved volume mounts to find Adamant, so any layout the user adopts (sibling dirs, a workspace dir, an entirely different filesystem location) works as long as the compose configuration is consistent. Because `docker compose config` emits absolute volume sources (after loading any colocated `.env`), the discovered path needs no relative-path resolution of its own.
 
-The path-discovery code uses `pathlib.Path.resolve()` against the compose file's directory, never strings; system-specific path conventions (XDG, macOS Library paths, Windows drive letters) are absorbed at the OS layer, not hardcoded.
+The path-discovery code uses `pathlib.Path`, never strings; system-specific path conventions (XDG, macOS Library paths, Windows drive letters) are absorbed at the OS layer, not hardcoded.
 
 ### Component Coverage Requirements
 
@@ -727,9 +730,20 @@ Cloning standalone Adamant at a pinned ref keeps tier 3 honest about what it is:
 
 Standalone Adamant is the default tier-3 fixture configuration. A `multi-repo` configuration is the planned second matrix leg: it tests admt against a layout that mounts more than one repo (e.g., adamant + a stub component repo). The multi-repo fixture clones two repos into `_workspace/` and ships a hand-written compose file that mounts both. Path-mapping bugs that only manifest with multiple bind mounts are caught here.
 
+### Worktree Configuration Coverage
+
+admt's worktree support changed how project metadata is derived and selected: compose metadata is resolved via `docker compose config` (which loads a colocated `.env` and expands `${VAR:-default}` interpolation -- so a parameterized `container_name` resolves to its real per-worktree value), the `.env` mtime participates in config staleness alongside the compose file's, and the active project is per-terminal (TTY-keyed session store, `ADMT_ENV` outranking it). Each of those behaviors has a binary-boundary failure mode tier 1+2 cannot see, so tier 3 covers them explicitly (`test_env_worktrees.py`):
+
+- **Parameterized registration.** A fixture compose using `${COMPOSE_PROJECT_NAME:-...}` for project and container name plus parameterized host ports, with a colocated `.env`: `admt env init` must register the *resolved* values (the exec hot path targets the resolved `container_name`), and the no-`.env` default must reproduce the unparameterized behavior.
+- **`.env` staleness.** Editing the `.env` (project rename, port change) with the compose file untouched must trigger a re-derive on the next command; adding or removing the `.env` outright must read as a change too (the absent-file sentinel).
+- **Side-by-side selection.** Two registered projects (a second copy of the fixture with a distinct `.env`): `ADMT_ENV` must target each correctly, and `env list`'s `*` must mark the resolution in effect.
+- **No-TTY resolution.** CI runners have no controlling terminal, so the per-terminal session layer is disabled by design and every resolution follows the global default -- tier 3 in CI exercises that path by construction, and one test asserts `env use` followed by a passthrough command behaves correctly without a TTY. The TTY-present behaviors (session pinning, stale-sid fallthrough, pruning) are tier-1/2 territory, where the terminal is faked.
+
+The worktree fixture is cheap: it reuses the standalone clone and varies only the compose file and `.env`, so it ships as a test file rather than a matrix leg. If the configuration count grows, `project: worktree` becomes an acceptable matrix axis under the same rules as `multi-repo`.
+
 ### Eventual: `admt create test-project`
 
-Once the post-MVP `admt create project` lands, the bootstrap can shift to `admt create project tests/container/_workspace/test-project` and the standalone-Adamant clone becomes one of two configs rather than the default. This is forward-looking; it does not block the initial CI surface.
+Once `admt create project` ([ROADMAP.md](ROADMAP.md) Tier 4) lands, the bootstrap can shift to `admt create project tests/container/_workspace/test-project` and the standalone-Adamant clone becomes one of two configs rather than the default. This is forward-looking; it does not block the initial CI surface.
 
 ---
 
@@ -753,7 +767,7 @@ Once the post-MVP `admt create project` lands, the bootstrap can shift to `admt 
 | `--force` | 2 + 3 | Same |
 | `ADMT_NONINTERACTIVE` | 2 + 3 | Tier 3 confirms the error message text |
 | `ADMT_NONINTERACTIVE=0` (off) | 2 + 3 | Tier 3 confirms the value-semantics rule |
-| `ADMT_ENV` override | 2 + 3 | Tier 3 confirms the override actually targets the right project |
+| `ADMT_ENV` override | 2 + 3 | Tier 3 confirms the override actually targets the right project (two-project form in [Worktree Configuration Coverage](#worktree-configuration-coverage)) |
 | `NO_COLOR` env var | 2 + 3 | Tier 3 confirms ANSI codes are stripped from real output |
 | Short alias | 2 + 3 | Tier 3 confirms `admt b` works on the binary |
 
@@ -761,7 +775,7 @@ Once the post-MVP `admt create project` lands, the bootstrap can shift to `admt 
 
 The 24 concrete commands (see [Appendix C](#appendix-c-command-inventory)) split into two categories:
 
-- **3 pure-host commands** (`env init`, `env use`, `env list`) -- no container, no project required (`env init` *creates* the project, `env use`/`env list` only read config). Tier 3 coverage: a single happy-path test that the binary works against `tests/container/_workspace/adamant/`.
+- **3 pure-host commands** (`env init`, `env use`, `env list`) -- no *running* container required. `env init` *creates* the project and shells `docker compose config` to derive its resolved metadata (docker CLI required; daemon not). `env use` writes the active selection -- this terminal's session entry plus the global default for new terminals. `env list` reads config and, when a controlling terminal exists, pins the resolution its `*` reports. Tier 3 coverage: a single happy-path test that the binary works against `tests/container/_workspace/adamant/`, plus [Worktree Configuration Coverage](#worktree-configuration-coverage).
 - **21 project + container commands** -- everything else. Tier 3 coverage: each gets one happy-path test plus the full failure-path matrix where applicable to the command.
 
 ### Per-Alias Coverage
@@ -1014,7 +1028,7 @@ A more aggressive variant walks the [scenarios from TEST_PLAN.md §What to Test]
 
 ### Plugin Compatibility (Forward-Looking)
 
-When the post-MVP plugin system lands, plugin authors register `Command` subclasses via Python entry points. The same self-audit machinery extends naturally:
+When the plugin system ([ROADMAP.md](ROADMAP.md) Tier 5) lands, plugin authors register `Command` subclasses via Python entry points. The same self-audit machinery extends naturally:
 
 - The audit discovers plugin commands the same way it discovers built-in commands -- via `Command.__subclasses__()` after entry-point loading.
 - Plugin authors point the audit at their plugin's test directory via a config setting in `pyproject.toml`:
@@ -1056,7 +1070,7 @@ _artifacts/
     container-logs.txt    # docker compose logs (only on failure)
 ```
 
-Two artifacts uploaded per workflow run (`gate-<sha>`, `container-<sha>`), keyed by `${{ github.run_id }}` so links from PR comments stay stable across re-runs.
+Two artifacts uploaded per workflow run (`gate-<os>-<sha>`, `container-<project>-<sha>`); the matrix-leg key keeps parallel legs from clashing, and the sha keeps links from PR comments stable across re-runs.
 
 ### Provenance
 
@@ -1120,7 +1134,7 @@ If a future need arises for a unified dashboard consolidating cross-job data the
 
 ### Retention and Naming
 
-Artifact name: `<workflow>-<sha>` (e.g., `gate-c0ffee1`). Stable enough to link from a PR comment; the `${{ github.sha }}` namespace prevents clashes across runs. Retention: 14 days (default for `actions/upload-artifact@v4`). Long enough to debug a failed run a few days later; short enough to not balloon storage.
+Artifact name: `<workflow>-<leg>-<sha>` (e.g., `gate-ubuntu-24.04-c0ffee1`). Stable enough to link from a PR comment; the `${{ github.sha }}` namespace prevents clashes across runs and the matrix-leg key prevents clashes within one. Retention: 14 days (default for `actions/upload-artifact@v4`). Long enough to debug a failed run a few days later; short enough to not balloon storage.
 
 ---
 
@@ -1167,7 +1181,7 @@ docker pull "ghcr.io/lasp/adamant:${ADAMANT_TAG}"
 git -C "$ADAMANT_DIR" checkout "${ADAMANT_REF}"
 ```
 
-Bumping the pair is a single commit: edit `_pins.env`, run tier 3 locally, commit titled `chore: bump Adamant pin to <tag> / <ref>`. The audit ([Version-Pin Parity Audit](#version-pin-parity-audit)) ensures both values are present, well-formed, and that no consumer file embeds a different tag or ref. The *remote* check -- does `:0.2` actually correspond to `v0.2.0` on Adamant's side? -- runs in [upstream.yml](#workflow-upstreamyml-post-mvp): the OCI image label `org.opencontainers.image.revision` is read from the pulled container and compared to `ADAMANT_REF`. Drift opens an `upstream-drift` issue.
+Bumping the pair is a single commit: edit `_pins.env`, run tier 3 locally, commit titled `chore: bump Adamant pin to <tag> / <ref>`. The audit ([Version-Pin Parity Audit](#version-pin-parity-audit)) ensures both values are present, well-formed, and that no consumer file embeds a different tag or ref. The *remote* check -- does `:0.2` actually correspond to `v0.2.0` on Adamant's side? -- runs in [upstream.yml](#workflow-upstreamyml-roadmap): the OCI image label `org.opencontainers.image.revision` is read from the pulled container and compared to `ADAMANT_REF`. Drift opens an `upstream-drift` issue.
 
 ---
 
@@ -1381,10 +1395,13 @@ def test_pin_consumer_references_source(pin, consumer_path, matcher):
 
 
 def test_no_orphan_adamant_tags():
-    """No file outside _pins.env may hardcode a `ghcr.io/lasp/adamant:<tag>` value.
+    """No executable file outside _pins.env may hardcode a `ghcr.io/lasp/adamant:<tag>` value.
 
     Catches the case where a contributor copies a tag into a workflow comment
-    or a docstring and forgets to update it when _pins.env moves.
+    or a docstring and forgets to update it when _pins.env moves. Markdown is
+    exempt by design: docs (including this plan) legitimately mention tags for
+    exposition, and enforcement targets the executable surfaces where a stale
+    tag changes behavior.
     """
     pin = next(p for p in PINS if p.name == "adamant_tag")
     pinned_value = _read_pin(pin)
@@ -1395,7 +1412,7 @@ def test_no_orphan_adamant_tags():
         "node_modules", "dist", "build",
     }
     for path in Path(".").rglob("*"):
-        if not path.is_file() or path.suffix not in {".md", ".yml", ".yaml", ".sh", ".py", ".toml"}:
+        if not path.is_file() or path.suffix not in {".yml", ".yaml", ".sh", ".py", ".toml"}:
             continue
         if path == pin.source or any(part in excluded_dirs for part in path.parts):
             continue
@@ -1412,10 +1429,10 @@ def test_no_orphan_adamant_tags():
 
 
 def test_third_party_action_pins_have_sha_and_version_comment():
-    """Every `uses: org/action@<ref>` either uses an Anthropic-first-party action
-    (actions/*, github/*) at a major version (`@v6`), or pins a 40-char SHA with
-    a `# vX.Y.Z` comment naming the human version. Catches drift between the
-    SHA and the comment, and unpinned third-party actions.
+    """Every `uses: org/action@<ref>` either uses a first-party or vendor-official
+    action (`actions/*`, `github/*`, `astral-sh/*`) at a major version (`@v6`), or
+    pins a 40-char SHA with a `# vX.Y.Z` comment naming the human version. Catches
+    drift between the SHA and the comment, and unpinned third-party actions.
     """
     sha40 = re.compile(r"^[0-9a-f]{40}$")
     use_line = re.compile(
@@ -1445,13 +1462,13 @@ def test_third_party_action_pins_have_sha_and_version_comment():
 
 - A workflow that hardcodes `uv 0.7.13` while `.uv-version` moves to `0.7.14`. (Caught: workflow's `.uv-version` reference is structural; the audit also re-runs the gate, which would fail to find the right uv if the workflow's runtime read got broken.)
 - A `pyproject.toml` `requires-python = ">=3.13"` while `.python-version` says `3.14`.
-- An `ADAMANT_TAG=0.2` in `_pins.env` while a stale `ghcr.io/lasp/adamant:0.1` lurks in a workflow comment, README badge URL, or doc snippet.
+- An `ADAMANT_TAG=0.2` in `_pins.env` while a stale `ghcr.io/lasp/adamant:0.1` lurks in a workflow comment, helper script, or test docstring.
 - An `ADAMANT_REF` that is empty or non-existent.
 - A third-party GitHub Action `uses: third-party/foo@v1` (unpinned) or pinned to a SHA without a `# vX.Y.Z` comment.
 
 #### What This Does Not Catch
 
-- The *remote* parity question -- "does `:0.2` actually equal `v0.2.0` in Adamant's source?" That requires a network round-trip to GHCR to read the OCI label `org.opencontainers.image.revision`. Performed in [upstream.yml](#workflow-upstreamyml-post-mvp), not in the gate.
+- The *remote* parity question -- "does `:0.2` actually equal `v0.2.0` in Adamant's source?" That requires a network round-trip to GHCR to read the OCI label `org.opencontainers.image.revision`. Performed in [upstream.yml](#workflow-upstreamyml-roadmap), not in the gate.
 - Drift between a tagged third-party action (`@v6`) and the actual code at that tag. Renovate/Dependabot is the tool for this; the audit only enforces the local-pinning convention.
 - Semantic correctness of the value (e.g., does the pinned uv version still install on Python 3.14?). That's caught by the gate run itself.
 
@@ -1461,7 +1478,7 @@ The audit runs in tier 1, costs a few milliseconds, and fails parametrized so co
 
 ## Implementation Order
 
-The first CI PR ships gate.yml plus the alignment tests and the self-audit. Tier 3 follows in a second PR because it has materially more setup. Post-MVP workflows follow in their own PRs.
+The first CI PR ships gate.yml plus the alignment tests and the self-audit. Tier 3 follows in a second PR because it has materially more setup. Roadmap workflows follow in their own PRs.
 
 **Each PR opens green** -- it merges only when its own gate run passes against the proposed workflow.
 
@@ -1470,8 +1487,7 @@ The first CI PR ships gate.yml plus the alignment tests and the self-audit. Tier
 - `.github/workflows/gate.yml` -- the four-command gate, Linux + macOS matrix.
 - `.uv-version` -- pin uv to the version that wrote the current `uv.lock`.
 - `.gitignore` additions for `gate-junit.xml`, `coverage.xml`, `_artifacts/`.
-- `tests/ci_assets/admt-dark.css` -- the shared theme.
-- `tests/ci_assets/render_summary.py` -- the unified-index renderer.
+- `tests/ci_assets/admt-dark.css` -- the coverage-HTML theme.
 - `tests/unit/test_ci_alignment.py` -- the spec/CI sync tests.
 - `tests/unit/test_pin_audit.py` -- the version-pin parity audit. The initial `PINS` manifest covers `uv`, `python`, and the third-party-action SHA convention; the Adamant pair (`ADAMANT_TAG`/`ADAMANT_REF`) joins the manifest when `_pins.env` lands alongside the container workflow.
 - `tests/unit/test_command_test_coverage.py` -- the structural self-audit (parametrized over commands/services/adapters/aliases plus the global, subcommand, and env-var flag families). The tier-3 arm of every audit family is conditional: it skips when `tests/container/` is empty, so the gate workflow can land before tier-3 tests exist. The tier-2 arm runs unconditionally -- existing `tests/integration/` tests already exercise most flags, and the audit makes the coverage explicit.
@@ -1492,6 +1508,7 @@ The PR's quality gate acceptance includes one extra rehearsal: `act -j gate -W .
   - `test_env_lifecycle.py` -- start/stop/restart/status/refresh.
   - `test_env_exec_login.py` -- exec, login, env exec.
   - `test_env_init_use_list.py` -- init, use, list, with multi-marker validation.
+  - `test_env_worktrees.py` -- parameterized-compose registration with a colocated `.env`, `.env`-edit staleness re-derive, two side-by-side projects selected via `ADMT_ENV`, and no-TTY resolution ([Worktree Configuration Coverage](#worktree-configuration-coverage)).
   - `test_env_image.py` -- build, push, pull, rm with `--volumes`/`--image`/`--remove-all`.
   - `test_passthrough.py` -- build, what, test [--all], style [--all], analyze [--all], clean [--all], prove, coverage [--all], publish [--all].
   - `test_templates.py` -- templates, templates --undo, the `~/.admt/backup-latest` marker behavior.
@@ -1508,24 +1525,24 @@ The PR's quality gate acceptance includes:
 - `bash tests/container/run.sh` succeeds locally (the act-independent host-script form).
 - `act pull_request -j container -W .github/workflows/container.yml --bind` succeeds locally with `DOCKER_HOST=unix:///var/run/docker.sock` (the native-Docker rehearsal form).
 
-### PR 3 (post-MVP): release.yml
+### PR 3 (roadmap): release.yml
 
 - `.github/workflows/release.yml`.
 - PyPI trusted-publishing setup (one-time, in repo settings).
 - Wheel-publish smoke against TestPyPI before the first real release.
 - Optional `arm64-verification` job (advisory-only for v0.2; required-blocking once the first arm64 user appears).
 
-### PR 4 (post-MVP): upstream.yml
+### PR 4 (roadmap): upstream.yml
 
 - `.github/workflows/upstream.yml`.
 - `.github/ISSUE_TEMPLATE/upstream-drift.md` so auto-opened issues have a consistent format.
 - `tests/contract/test_redo_what_format.py` and friends -- frozen samples of upstream output formats with parser tests, so contract drift surfaces locally first.
 
-### PR 5+ (post-MVP): polish
+### PR 5+ (roadmap): polish
 
 - ARM64 release verification (post-`release.yml`).
 - Codecov integration (after coverage is stable on `main`).
-- Whole-file-size trip-wire after the post-MVP refactor pass.
+- Whole-file-size trip-wire.
 - Status badges, README updates.
 - Per-tier scenario audit (the more aggressive self-audit variant).
 - Plugin-author CI template once the plugin entry-point system lands.
@@ -1560,7 +1577,7 @@ Each new job:
 
 ## Plugin Convention (Forward-Looking)
 
-The post-MVP plugin system registers `Command` subclasses via Python entry points. The CI surface should generalize to plugin authors without forcing them to re-invent the wheel.
+The plugin system ([ROADMAP.md](ROADMAP.md) Tier 5) registers `Command` subclasses via Python entry points. The CI surface should generalize to plugin authors without forcing them to re-invent the wheel.
 
 The convention:
 
@@ -1568,7 +1585,7 @@ The convention:
 2. **Plugins extend the self-audit.** A plugin's `tests/unit/test_command_test_coverage.py` imports the audit machinery from admt and runs it against the plugin's `Command` subclasses (same pattern as importing a pytest fixture). The audit's test-directory configuration is read from `[tool.admt.ci]` in `pyproject.toml`.
 3. **Plugins exercise tier 3 against admt itself.** Plugins that expose container-touching commands need their own tier-3 fixture (since the plugin's commands operate on a real Adamant project). The fixture pattern from `tests/container/conftest.py` is reusable: clone Adamant, register, start, exercise the plugin's commands.
 
-This is forward-looking, but the conventions land in this plan now so the post-MVP plugin design has a target.
+This is forward-looking, but the conventions land in this plan now so the plugin-system design has a target.
 
 ---
 
@@ -1594,16 +1611,16 @@ Sum: realistic tier-3 wall time is 8-15 minutes per run on cloud GHA. Locally wi
 Several items read as "good engineering" but whose value scales with codebase size or contributor count, not with the workflow shipping. If implementation scope feels tight, defer in this order:
 
 - **A unified HTML dashboard.** GitHub's check view (driven by `mikepenz/action-junit-report@v4`) plus the themed coverage HTML cover the forensic surface. A unified dashboard with provenance banner and per-audit detail pages is UX polish -- valuable when comparing runs side-by-side or consolidating cross-job data, not necessary for a CI that just needs to gate merges and surface failures. Reappears as a follow-up if a real need arises.
-- **`test_no_orphan_adamant_tags`** (the orphan-tag scanner). Walks every text file in the repo. The exclusion list is broad, but the scanner is fragile: a docstring example or a doc snippet that mentions `ghcr.io/lasp/adamant:0.1` for historical reasons would false-positive. Soft-mode (warn, not fail) is reasonable on first introduction, hardening to fail-mode after a few weeks of false-positive review.
+- **`test_no_orphan_adamant_tags`** (the orphan-tag scanner). Walks every executable text file in the repo (Markdown is exempt by design -- docs mention tags for exposition). The exclusion list is broad, but a docstring example that mentions `ghcr.io/lasp/adamant:0.1` for historical reasons would still false-positive. Soft-mode (warn, not fail) is reasonable on first introduction, hardening to fail-mode after a few weeks of false-positive review.
 - **`test_third_party_action_pins_have_sha_and_version_comment`.** Catches a real failure mode (unpinned third-party actions), but Renovate/Dependabot is the tool for the bump-the-SHA-and-the-comment-together job. The audit is paranoia insurance. Cheap to keep, but if it triggers more false-positives than real catches in the first month, drop it.
-- **ARM64 verification** in `release.yml`. Marked post-MVP for good reason: QEMU under cloud GHA is very slow (15-25 minutes for a representative test subset; see Appendix B). Not free even when "post-MVP." Treat as advisory until the first arm64 admt user emerges.
+- **ARM64 verification** in `release.yml`. Deferred to the roadmap for good reason: QEMU under cloud GHA is very slow (15-25 minutes for a representative test subset; see Appendix B). Not free even deferred. Treat as advisory until the first arm64 admt user emerges.
 
 ### Assumptions worth verifying before they ship
 
 A few claims in this plan rest on upstream behavior I have not empirically confirmed:
 
-- **Adamant container ships OCI labels** (specifically `org.opencontainers.image.revision`). The pin-parity-remote job in upstream.yml depends on this. If the Adamant image is built without those labels, the job fails for the wrong reason ("label missing" rather than "ref mismatch"). Verify with `docker inspect ghcr.io/lasp/adamant:0.2` *before* writing the upstream workflow. If labels are absent, the remote check needs a different mechanism (e.g., maintain a manual map of `_pins.env` values to upstream release notes).
-- **`catthehacker/ubuntu:act-latest` ships `docker` CLI 29.x.** Confirmed in this plan's act capability matrix probe (29.4.1-1 was observed). If a future image bump removes or downgrades the docker CLI, the act recipes break silently. The pin audit should grow a "platform image version" entry once it stabilizes.
+- **Adamant container ships OCI labels** (specifically `org.opencontainers.image.revision`). The pin-parity-remote job in upstream.yml depends on this. If the Adamant image is built without those labels, the job fails for the wrong reason ("label missing" rather than "ref mismatch"). Verify with `docker inspect ghcr.io/lasp/adamant:${ADAMANT_TAG}` *before* writing the upstream workflow. If labels are absent, the remote check needs a different mechanism (e.g., maintain a manual map of `_pins.env` values to upstream release notes).
+- **`catthehacker/ubuntu:act-latest` ships `docker` CLI 29.x.** Confirmed in this plan's act capability matrix probe (29.4.1-1 was observed). If a future image bump removes or downgrades the docker CLI, the act recipes break silently -- and not just for daemon-facing tests: `admt env init`/`env refresh` themselves shell `docker compose config`, so registration inside the runner requires the docker CLI even before any container starts. The pin audit should grow a "platform image version" entry once it stabilizes.
 - **`actions/cache@v5` semantics for the activate snapshot are strong enough.** The proposed cache key includes `hash(env/activate, requirements.txt, _pins.env)`. If Adamant's activate has untracked dependencies (e.g., a `setup.sh` it `source`s), the hash misses them and stale snapshots restore. Verify by reading the upstream activate script before relying on the cache.
 
 ### Where the plan is conservative
@@ -1616,7 +1633,7 @@ A few places where the plan errs toward more verification than is strictly neede
 
 ### Where the plan is aggressive
 
-- **Tier 3 on every non-draft PR.** This is a deliberate departure from MVP_PLAN.md's "smoke tests on PR merge" wording, on the grounds that the spec-vs-impl drift retros showed merge-time validation is too late. The cost is 8-15 minutes per PR. If the project has many small PRs (docs, typo fixes, dependency bumps), this cost compounds. The mitigation is the draft-PR exemption: keep WIP work in draft until ready for serious review, then flip to "ready" once tier 3 has something to test.
+- **Tier 3 on every non-draft PR.** This is a deliberate departure from ROADMAP.md's "container smoke tests on PR merge" wording, on the grounds that the spec-vs-impl drift retros showed merge-time validation is too late. The cost is 8-15 minutes per PR. If the project has many small PRs (docs, typo fixes, dependency bumps), this cost compounds. The mitigation is the draft-PR exemption: keep WIP work in draft until ready for serious review, then flip to "ready" once tier 3 has something to test.
 - **No `[skip ci]` bypass.** The plan rejects skip directives entirely. This is the right default for a 24-command CLI where every command is one PR away from breaking. A future contributor will want a skip for "I changed only README.md" -- the answer is "let CI run; it's 90 seconds".
 
 ### Recommended deferral order
@@ -1642,9 +1659,9 @@ These five are the load-bearing safety net. Everything else is decoration on top
 
 ## Roadmap
 
-The MVP CI surface is deliberately small: gate.yml + container.yml + alignment + self-audit. Everything below is real and useful, but it builds on the MVP CI surface and should not delay that surface from landing.
+The initial CI surface is deliberately small: gate.yml + container.yml + alignment + self-audit. Everything below is real and useful, but it builds on that surface and should not delay it from landing.
 
-### Near-term (within a release or two of MVP CI shipping)
+### Near-term (within a release or two of the initial CI surface shipping)
 
 - **release.yml** -- PyPI publishing.
 - **upstream.yml** -- weekly contract test against `:latest`.
@@ -1771,7 +1788,7 @@ The self-audit parametrizes over both tables and asserts each entry has at least
 
 ## Appendix D: act Capability Matrix (Verified)
 
-The recipes in [act Rehearsal Protocol](#act-rehearsal-protocol) were validated empirically against `act 0.2.84` on `Manjaro Linux` with both `desktop-linux` (active) and native (`/var/run/docker.sock`) Docker contexts available. Each row was probed with a small workflow that exercised the relevant capability.
+The recipes in [act Rehearsal Protocol](#act-rehearsal-protocol) were validated empirically against `act 0.2.84` on `Manjaro Linux` (the 0.2.86 floor in [Prerequisites](#prerequisites) is a CVE floor, not a behavioral one; the probed capabilities are unchanged) with both `desktop-linux` (active) and native (`/var/run/docker.sock`) Docker contexts available. Each row was probed with a small workflow that exercised the relevant capability.
 
 | Capability | Native Docker | Docker Desktop (no File Sharing config) | Docker Desktop (with File Sharing) |
 |---|---|---|---|
@@ -1799,7 +1816,7 @@ The findings here will eventually move into `tests/CI.md` as operator runbook co
 - **`--bind`** -- act flag that bind-mounts the workspace at the same absolute path on host and runner. Required for tier 3 because path-mapping in admt depends on host and runner agreeing on absolute paths.
 - **Drift** -- the spec saying one thing and the code (or workflow) doing another. Three categories: spec-vs-impl, spec-vs-fact, spec-vs-CI. CI9 (drift-prevention guards) targets the third.
 - **Self-audit** -- a parametrized test that walks `Command`/`Service`/`Adapter` modules and asserts each has a test at the right tier. The structural arm of the more general "is this code tested" question; complements the 100% line + branch coverage gate.
-- **Provenance** -- the metadata attached to every artifact bundle (commit SHA, run ID, branch/PR, OS, timestamp, gate version). Visible in the unified `index.html` banner and in `provenance.json`.
+- **Provenance** -- the metadata that answers "exactly what did this run test?" (commit SHA, run ID, branch/PR, OS, timestamp, pins, image digest). Captured in the container job's `versions.txt` and in the workflow run's own metadata.
 
 ---
 
