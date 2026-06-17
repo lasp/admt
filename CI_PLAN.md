@@ -4,7 +4,7 @@ This document specifies how admt's continuous-integration pipeline implements th
 
 admt has no CI today. The local four-command gate ([TEST_PLAN.md §Quality Gate](TEST_PLAN.md#quality-gate)) is the only gate, and it has held: full line + branch coverage, ruff/mypy clean. CI exists to close the gaps the local gate cannot solve: spec-vs-implementation drift, drift between code and CI itself, lockfile churn, and the merge-as-test problem where independently-green PRs are not validated as a coherent whole until after they land.
 
-This plan is the spec for the CI implementation that follows. Like every admt spec doc, code that does not trace to this document is rejected; behavior that diverges from this document is a defect to either fix in the workflow or amend here first -- not both, and not silently.
+This plan is the spec for admt's CI -- the workflow files under `.github/workflows/` and their supporting test scaffolding. Like every admt spec doc, code that does not trace to it is rejected; behavior that diverges is a defect to fix in the workflow or amend here first -- not both, not silently.
 
 ---
 
@@ -26,8 +26,7 @@ This plan is the spec for the CI implementation that follows. Like every admt sp
 - [Drift-Prevention Guards](#drift-prevention-guards)
 - [Implementation Order](#implementation-order)
 - [Test Plan for the Workflows Themselves](#test-plan-for-the-workflows-themselves)
-- [Plugin Convention (Forward-Looking)](#plugin-convention-forward-looking)
-- [Risks, Tradeoffs, and Honest Estimates](#risks-tradeoffs-and-honest-estimates)
+- [Constraints and Assumptions](#constraints-and-assumptions)
 - [Roadmap](#roadmap)
 - [Appendix A: Trigger and Permission Matrix](#appendix-a-trigger-and-permission-matrix)
 - [Appendix B: Job Reference](#appendix-b-job-reference)
@@ -1096,23 +1095,7 @@ Each new job:
 
 ---
 
-## Plugin Convention (Forward-Looking)
-
-The plugin system ([ROADMAP.md](ROADMAP.md) Tier 5) registers `Command` subclasses via Python entry points. The CI surface should generalize to plugin authors without forcing them to re-invent the wheel.
-
-The convention:
-
-1. **Plugins inherit admt's gate.** A plugin's pyproject.toml declares `[dependency-groups]` mirroring admt's; their CI runs the same four-command gate. This plan describes a reusable workflow file (`gate.yml`'s logic published as a callable workflow) that plugins can `uses:` directly.
-2. **Plugins extend the self-audit.** A plugin's `tests/unit/test_command_test_coverage.py` imports the audit machinery from admt and runs it against the plugin's `Command` subclasses (same pattern as importing a pytest fixture). The audit's test-directory configuration is read from `[tool.admt.ci]` in `pyproject.toml`.
-3. **Plugins exercise tier 3 against admt itself.** Plugins that expose container-touching commands need their own tier-3 fixture (since the plugin's commands operate on a real Adamant project). The fixture pattern from `tests/container/conftest.py` is reusable: clone Adamant, register, start, exercise the plugin's commands.
-
-This is forward-looking, but the conventions land in this plan now so the plugin-system design has a target.
-
----
-
-## Risks, Tradeoffs, and Honest Estimates
-
-This plan is exhaustive by design (admt's culture is "spec the boring stuff" -- agents stay inside specs that are complete enough to stay inside). Exhaustive specs accumulate cost. This section calls out where the plan's reach exceeds its grasp, what's likely to spiral, and what to defer if implementation scope feels tight.
+## Constraints and Assumptions
 
 ### Wall-time reality
 
@@ -1121,58 +1104,18 @@ Tier-3 wall-time estimates need explicit caveats. ARCHITECTURE.md §Environment 
 - **Cloud GHA runners are fresh per job.** The activate snapshot at `/tmp/admt/<project>/` does not persist across runs unless cached explicitly (see [Roadmap §Medium-term](#medium-term)).
 - **Image pull on cold cache** is ~2-3 minutes for an Adamant image of typical size; warm with `actions/cache@v5` it's ~10-30 seconds.
 - **Adamant first-run activate** is the dominant cost. Steady-state on cloud is 5-10 minutes per run until snapshot caching lands.
-- **Tier 3 test execution itself** (admt commands against the running container) is 2-5 minutes for the suite covering every command at the audit's required tier.
+- **Tier 3 test execution itself** (admt commands against the running container) is 2-5 minutes for the full command suite.
 
 Sum: realistic tier-3 wall time is 8-15 minutes per run on cloud GHA. Locally with image and snapshot reuse, 3-5 minutes is achievable. Appendix B reflects this.
 
 **Action**: every `timeout-minutes` for container-touching jobs is set to 60. Merge SLAs plan around the upper end of these ranges. Treat the activate-snapshot caching optimization as a real deliverable in the medium-term roadmap, not a nice-to-have.
 
-### Items that could spiral if pursued before they're load-bearing
+### Upstream assumptions to verify before they ship
 
-Several items read as "good engineering" but whose value scales with codebase size or contributor count, not with the workflow shipping. If implementation scope feels tight, defer in this order:
-
-- **A unified HTML dashboard.** GitHub's check view (driven by `mikepenz/action-junit-report@v4`) plus the themed coverage HTML cover the forensic surface. A unified dashboard with provenance banner and per-audit detail pages is UX polish -- valuable when comparing runs side-by-side or consolidating cross-job data, not necessary for a CI that just needs to gate merges and surface failures. Reappears as a follow-up if a real need arises.
-- **`test_no_orphan_adamant_tags`** (the orphan-tag scanner). Walks every executable text file in the repo (Markdown is exempt by design -- docs mention tags for exposition). The exclusion list is broad, but a docstring example that mentions `ghcr.io/lasp/adamant:0.1` for historical reasons would still false-positive. Soft-mode (warn, not fail) is reasonable on first introduction, hardening to fail-mode after a few weeks of false-positive review.
-- **`test_third_party_action_pins_have_sha_and_version_comment`.** Catches a real failure mode (unpinned third-party actions), but Renovate/Dependabot is the tool for the bump-the-SHA-and-the-comment-together job. The audit is paranoia insurance. Cheap to keep, but if it triggers more false-positives than real catches in the first month, drop it.
-- **ARM64 verification** in `release.yml`. Deferred to the roadmap for good reason: QEMU under cloud GHA is very slow (15-25 minutes for a representative test subset; see Appendix B). Not free even deferred. Treat as advisory until the first arm64 admt user emerges.
-
-### Assumptions worth verifying before they ship
-
-A few claims in this plan rest on upstream behavior I have not empirically confirmed:
+A few claims rest on upstream behavior not yet confirmed; verify before shipping the dependent workflow:
 
 - **Adamant container ships OCI labels** (specifically `org.opencontainers.image.revision`). The pin-parity-remote job in upstream.yml depends on this. If the Adamant image is built without those labels, the job fails for the wrong reason ("label missing" rather than "ref mismatch"). Verify with `docker inspect ghcr.io/lasp/adamant:${ADAMANT_TAG}` *before* writing the upstream workflow. If labels are absent, the remote check needs a different mechanism (e.g., maintain a manual map of `_pins.env` values to upstream release notes).
 - **`actions/cache@v5` semantics for the activate snapshot are strong enough.** The proposed cache key includes `hash(env/activate, requirements.txt, _pins.env)`. If Adamant's activate has untracked dependencies (e.g., a `setup.sh` it `source`s), the hash misses them and stale snapshots restore. Verify by reading the upstream activate script before relying on the cache.
-
-### Where the plan is conservative
-
-A few places where the plan errs toward more verification than is strictly needed -- intentionally, given admt's "spec the boring stuff" culture, but worth acknowledging:
-
-- The **Spec/CI Alignment Guards** assert the gate command appears verbatim in `gate.yml`. This catches benign reformattings as failures. The reformatting failure is the right behavior (force a deliberate update to TEST_PLAN.md when CI changes), but a contributor will hit it once and grumble.
-- The **per-flag tier-3 audit** asserts every flag has a tier-3 test. For flags whose semantics are entirely host-side (e.g., `--quiet` toggling stdout suppression), the tier-3 invocation is just "the binary accepted the flag without erroring" -- a one-line test. The audit insists on it anyway. Worth it for the regression-free guarantee, but not free.
-- **`fail-fast: false`** on the gate matrix means a Linux-only flake doesn't hide a macOS-only flake. It also doubles the cost of a deterministic failure. Acceptable tradeoff.
-
-### Where the plan is aggressive
-
-- **Tier 3 on every non-draft PR.** This is a deliberate departure from ROADMAP.md's "container smoke tests on PR merge" wording, on the grounds that the spec-vs-impl drift retros showed merge-time validation is too late. The cost is 8-15 minutes per PR. If the project has many small PRs (docs, typo fixes, dependency bumps), this cost compounds. The mitigation is the draft-PR exemption: keep WIP work in draft until ready for serious review, then flip to "ready" once tier 3 has something to test.
-- **No `[skip ci]` bypass.** The plan rejects skip directives entirely. This is the right default for a 24-command CLI where every command is one PR away from breaking. A future contributor will want a skip for "I changed only README.md" -- the answer is "let CI run; it's 90 seconds".
-
-### Recommended deferral order
-
-When implementation scope is tight, defer in this order:
-
-1. The unified HTML dashboard renderer.
-2. The third-party-action SHA-comment audit (nice; not load-bearing).
-3. The orphan-tag scanner (or run it in soft mode first).
-4. The plugin-convention prose (forward-looking; safe to thin if not informing current design choices).
-
-Do **not** defer:
-
-- The four-command gate ([CI1](#ci1-same-gate-from-a-clean-machine)).
-- The 100% coverage threshold ([CI2](#ci2-the-coverage-threshold-is-hard)).
-- The version-pin parity audit's local arm (`uv`, `python`, third-party-action SHA-pin format -- not necessarily the comment-version pairing).
-- The drift-prevention tests in `tests/unit/test_ci_alignment.py` for the gate command and run-script invocation.
-
-These four are the load-bearing safety net. Everything else is decoration on top.
 
 ---
 
@@ -1202,7 +1145,7 @@ The initial CI surface is deliberately small: gate.yml + container.yml + alignme
 ### Long-term
 
 - **Windows CI** when the spec adds Windows as a target platform.
-- **Plugin-author CI template**.
+- **Plugin-author CI template** -- a reusable `gate.yml` workflow plus the tier-3 fixture pattern, for plugins that register `Command` subclasses via entry points ([ARCHITECTURE.md §Plugin System](ARCHITECTURE.md#plugin-system-roadmap)).
 - **Schema-based contract tests** for tier 3 once `admt validate` lands.
 - **Self-hosted runner pool** if cloud-runner minutes become a bottleneck.
 
@@ -1223,7 +1166,7 @@ The initial CI surface is deliberately small: gate.yml + container.yml + alignme
 
 ## Appendix B: Job Reference
 
-These are *order-of-magnitude* estimates, not commitments. Wall times are dominated by uncached external work (`uv sync`, image pull, Adamant `env/activate`). See [Risks, Tradeoffs, and Honest Estimates](#risks-tradeoffs-and-honest-estimates) for the assumptions baked into each row.
+These are *order-of-magnitude* estimates, not commitments. Wall times are dominated by uncached external work (`uv sync`, image pull, Adamant `env/activate`). See [Constraints and Assumptions](#constraints-and-assumptions) for the assumptions baked into each row.
 
 | Job | Workflow | OS | Wall Time (steady) | Wall Time (cold) |
 |---|---|---|---|---|
@@ -1312,7 +1255,3 @@ The tier-3 suite covers both tables -- one minimal test invocation per command a
 - **Drift** -- the spec saying one thing and the code (or workflow) doing another. Three categories: spec-vs-impl, spec-vs-fact, spec-vs-CI. CI9 (drift-prevention guards) targets the third.
 - **Self-audit** -- a parametrized test that walks `Command`/`Service`/`Adapter` modules and asserts each has a test at the right tier. The structural arm of the more general "is this code tested" question; complements the 100% line + branch coverage gate.
 - **Provenance** -- the metadata that answers "exactly what did this run test?" (commit SHA, run ID, branch/PR, OS, timestamp, pins, image digest). Captured in the container job's `versions.txt` and in the workflow run's own metadata.
-
----
-
-This plan is the spec for `.github/workflows/*.yml` and the supporting test-side scaffolding. Code that implements the workflows must trace to a section here. A workflow change that does not trace is rejected; behavior that diverges from this plan is a defect to either fix in YAML or amend here first -- not both, and not silently.
