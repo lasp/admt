@@ -65,10 +65,11 @@ This list is also the test plan for whether CI is doing its job. If a future dri
 - **Local rehearsal via `act` where possible**, with documented recipes covering both native Docker on Linux and Docker Desktop on macOS or Linux. Where act cannot rehearse a workflow (verified empirically; see [Appendix D](#appendix-d-act-capability-matrix-verified)), the workflow's logic is exposed as a host script (`tests/container/run.sh`) so CI and local share the same entry point even when act is unavailable.
 - **Toolchain pinning** for `uv`, the Python interpreter, the Adamant container image, and any GitHub Actions third-party action versions.
 - **Failure forensics** -- every failure produces an artifact bundle with provenance metadata (commit SHA, run ID, branch, OS) and human-navigable HTML reports.
+- **Wheel build on every run.** `uv build` runs in the gate and uploads the wheel as an artifact on every push and PR, so packaging and entry-point breakage (`[project.scripts]` wiring, missing package data) surfaces immediately instead of first failing at release. Publishing that wheel to PyPI stays a release-only action ([release.yml](#workflow-releaseyml-roadmap)).
 
 ### Roadmap (in scope to *describe* here, not to land in the initial CI surface)
 
-- **PyPI publishing on release** -- `uv build`, `uv publish`, attestations.
+- **PyPI publishing on release** -- `uv publish` + attestations. The wheel itself is already built and artifact-checked on every run (see In Scope above); release only *publishes* the built artifact.
 - **ARM64 verification on release** -- echo the Adamant ecosystem pattern (`test_all_arm64.yml`).
 - **Upstream contract tests** -- a weekly schedule that re-runs tier 3 against the latest `ghcr.io/lasp/adamant:*` image so we notice when an Adamant change breaks our integration.
 - **Status badges** in `README.md` (gate, container, release, upstream).
@@ -234,6 +235,10 @@ strategy:
 10. **Upload artifact bundle** (always) -- `actions/upload-artifact@v4` with everything in `_artifacts/` (coverage HTML, coverage XML, JUnit XML, log tail). Name: `gate-${{ matrix.os }}-${{ github.sha }}`.
 11. **Post step summary** (always) -- a tabular summary on `$GITHUB_STEP_SUMMARY` with gate command results, coverage %, and a link to the artifact.
 
+### Wheel build (every run)
+
+The ubuntu leg also runs `uv build` and uploads `dist/*.whl` + `dist/*.tar.gz` as an artifact. This runs on every push and PR, so packaging and entry-point breakage (`[project.scripts]` wiring, missing package data) surfaces in the gate -- not first at release time. Publishing the wheel to PyPI is the only release-exclusive packaging step ([release.yml](#workflow-releaseyml-roadmap)).
+
 ### Job-Level Configuration
 
 ```yaml
@@ -344,7 +349,7 @@ on:
 
 1. **gate-release** -- re-runs the four-command gate against the release tag's tip on Linux + macOS. Blocks publish on failure.
 2. **container-release** -- re-runs tier 3 against the release tag's tip. Blocks publish on failure.
-3. **build-wheel** -- `uv build` on `ubuntu-24.04`. Produces `dist/admt-X.Y.Z-py3-none-any.whl` and `dist/admt-X.Y.Z.tar.gz`. Uploads both as artifacts.
+3. **build-wheel** -- rebuild the wheel at the release tag's tip (`uv build` on `ubuntu-24.04`) so the published bytes match the tag exactly, producing `dist/admt-X.Y.Z-py3-none-any.whl` and `dist/admt-X.Y.Z.tar.gz`. The build is not release-exclusive -- the gate already builds and artifact-checks the wheel on every run (see [gate.yml](#workflow-gateyml)); only the publish step (below) is release-only.
 4. **publish-pypi** -- `pypa/gh-action-pypi-publish@release/v1` with trusted publishing (no API token in secrets). `needs: [gate-release, container-release, build-wheel]`. Skipped under act (`if: ${{ !env.ACT }}`).
 5. **arm64-verification** -- `docker/setup-qemu-action@v4` + `linux/arm64` execution of the wheel against `ghcr.io/lasp/adamant:${ADAMANT_TAG}-arm64`. Echoes `adamant/.github/workflows/test_all_arm64.yml`. Advisory-only for the first published release; required-blocking once the first arm64 admt user emerges.
 
