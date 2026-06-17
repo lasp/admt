@@ -1041,71 +1041,35 @@ The audit runs in tier 1, costs a few milliseconds, and fails parametrized so co
 
 ## Implementation Order
 
-The first CI PR ships gate.yml plus the alignment and pin-parity tests. Tier 3 follows in a second PR because it has materially more setup. Roadmap workflows follow in their own PRs.
+The implementation lands in a single PR (the placeholder PR #19), in tests-first order: the load-bearing work is the tier-3 container suite and its host script, written and green locally before any workflow YAML. Architectural enforcement is already in place (`tests/unit/test_architecture.py`). The workflow YAML wraps the suite -- it is the last step, not the first. Per [CODING_RULES.md §Agent-Specific Rules](CODING_RULES.md#agent-specific-rules), the implementation edits the workflow to match this spec, never the spec to match the workflow; it touches ARCHITECTURE/CODING_RULES/TEST_PLAN only where this plan amends them.
 
-**Each PR opens green** -- it merges only when its own gate run passes against the proposed workflow.
-
-### PR 1: gate.yml + alignment
-
-- `.github/workflows/gate.yml` -- the four-command gate, Linux + macOS matrix.
-- `.uv-version` -- pin uv to the version that wrote the current `uv.lock`.
-- `.gitignore` additions for `gate-junit.xml`, `coverage.xml`, `_artifacts/`.
-- `tests/ci_assets/admt-dark.css` -- the coverage-HTML theme.
-- `tests/unit/test_ci_alignment.py` -- the spec/CI sync tests.
-- `tests/unit/test_pin_audit.py` -- the version-pin parity audit. The initial `PINS` manifest covers `uv`, `python`, and the third-party-action SHA convention; the Adamant pair (`ADAMANT_TAG`/`ADAMANT_REF`) joins the manifest when `_pins.env` lands alongside the container workflow.
-- One CLAUDE.md update: a `## CI` section pointing to this plan and to the local gate commands.
-- README badge for gate status.
-
-The PR does *not* touch ARCHITECTURE.md, CODING_RULES.md, or TEST_PLAN.md, except where this plan amends them. Per [CODING_RULES.md §Agent-Specific Rules](CODING_RULES.md#agent-specific-rules), the spec doesn't get edited to match what the workflow happens to do -- the workflow gets edited to match the spec.
-
-The PR's acceptance is the four-command gate green locally before pushing -- gate.yml's steps are exactly those commands.
-
-### PR 2: container.yml + tier-3 tests
-
-- `.github/workflows/container.yml`.
-- `tests/container/_pins.env` -- the Adamant tag/ref pair file (see [Paired Pins](#paired-pins-and-_pinsenv)). Adds the `ADAMANT_TAG` and `ADAMANT_REF` entries to the `PINS` manifest in `tests/unit/test_pin_audit.py`, and turns on `test_no_orphan_adamant_tags`.
-- `tests/container/run.sh` -- the host script CI invokes.
-- `tests/container/conftest.py` -- session-scoped fixtures (clone Adamant, register, start container, expose component path).
-- `tests/container/test_*.py` -- one file per command family, mirroring `tests/integration/`. The first cut covers happy paths and the failure-path matrix from [TEST_PLAN.md §Error Path Tests](TEST_PLAN.md#error-path-tests):
-  - `test_env_lifecycle.py` -- start/stop/restart/status/refresh.
-  - `test_env_exec_login.py` -- exec, login, env exec.
-  - `test_env_init_use_list.py` -- init, use, list, with multi-marker validation.
-  - `test_env_worktrees.py` -- parameterized-compose registration with a colocated `.env`, `.env`-edit staleness re-derive, two side-by-side projects selected via `ADMT_ENV`, and no-TTY resolution ([Worktree Configuration Coverage](#worktree-configuration-coverage)).
-  - `test_env_image.py` -- build, push, pull, rm with `--volumes`/`--image`/`--remove-all`.
-  - `test_passthrough.py` -- build, what, test [--all], style [--all], analyze [--all], clean [--all], prove, coverage [--all], publish [--all].
-  - `test_templates.py` -- templates, templates --undo, the `~/.admt/backup-latest` marker behavior.
-  - `test_failure_paths.py` -- exit-code conformance for every error path TEST_PLAN.md names (the lesson from spec-vs-impl drift retros).
-  - `test_global_flags.py` -- `--verbose`, `--quiet`, `--debug`, `--yes`, `--force`, `ADMT_NONINTERACTIVE`, `ADMT_NONINTERACTIVE=0`, `ADMT_ENV`, `NO_COLOR`.
-  - `test_aliases.py` -- one minimal invocation per alias (`e`, `b`, `t`, `s`, `an`, `cl`, `p`, `cov`, `pub`, `w`, `tmpl`).
-  - `test_signal_handling.py` -- SIGINT propagation, exit code 130 ([ARCHITECTURE.md §Signal Handling](ARCHITECTURE.md#signal-handling)).
-- `tests/CI.md` -- an operator runbook for running tier 3 locally via `tests/container/run.sh` (operator instructions rather than spec).
-- README badge for container status.
-
-The PR's quality gate acceptance includes:
-
-- `bash tests/container/run.sh` succeeds locally against a real Adamant container.
-
-### PR 3 (roadmap): release.yml
-
-- `.github/workflows/release.yml`.
-- PyPI trusted-publishing setup (one-time, in repo settings).
-- Wheel-publish smoke against TestPyPI before the first real release.
-- Optional `arm64-verification` job (advisory-only for v0.2; required-blocking once the first arm64 user appears).
-
-### PR 4 (roadmap): upstream.yml
-
-- `.github/workflows/upstream.yml`.
-- `.github/ISSUE_TEMPLATE/upstream-drift.md` so auto-opened issues have a consistent format.
-- `tests/contract/test_redo_what_format.py` and friends -- frozen samples of upstream output formats with parser tests, so contract drift surfaces locally first.
-
-### PR 5+ (roadmap): polish
-
-- ARM64 release verification (post-`release.yml`).
-- Codecov integration (after coverage is stable on `main`).
-- Whole-file-size trip-wire.
-- Status badges, README updates.
-- Per-tier scenario audit (the more aggressive self-audit variant).
-- Plugin-author CI template once the plugin entry-point system lands.
+1. **Tier-3 suite + `run.sh`, green locally (no CI yet).** The substance: a real container-test tier runnable on any machine with Docker, independent of CI. Tier-3 tests are marked `@pytest.mark.container` and excluded from the four-command gate, so the fast gate stays green; they run via the host script.
+   - `tests/container/_pins.env` -- the Adamant tag/ref pair (see [Paired Pins](#paired-pins-and-_pinsenv)).
+   - `tests/container/run.sh` -- the host script the workflow later invokes ([Tier 3 Fixture Strategy](#tier-3-fixture-strategy)).
+   - `tests/container/conftest.py` -- session-scoped fixtures (clone Adamant, register, start container, expose component path).
+   - `tests/container/test_*.py` -- one file per command family, covering happy paths and the failure-path matrix from [TEST_PLAN.md §Error Path Tests](TEST_PLAN.md#error-path-tests):
+     - `test_env_lifecycle.py` -- start/stop/restart/status/refresh.
+     - `test_env_exec_login.py` -- exec, login, env exec.
+     - `test_env_init_use_list.py` -- init, use, list, with multi-marker validation.
+     - `test_env_worktrees.py` -- parameterized-compose registration with a colocated `.env`, `.env`-edit staleness re-derive, two side-by-side projects selected via `ADMT_ENV`, and no-TTY resolution ([Worktree Configuration Coverage](#worktree-configuration-coverage)).
+     - `test_env_image.py` -- build, push, pull, rm with `--volumes`/`--image`/`--remove-all`.
+     - `test_passthrough.py` -- build, what, test [--all], style [--all], analyze [--all], clean [--all], prove, coverage [--all], publish [--all].
+     - `test_templates.py` -- templates, templates --undo, the `~/.admt/backup-latest` marker behavior.
+     - `test_failure_paths.py` -- exit-code conformance for every error path TEST_PLAN.md names.
+     - `test_global_flags.py` -- `--verbose`, `--quiet`, `--debug`, `--yes`, `--force`, `ADMT_NONINTERACTIVE`, `ADMT_NONINTERACTIVE=0`, `ADMT_ENV`, `NO_COLOR`.
+     - `test_aliases.py` -- one minimal invocation per alias (`e`, `b`, `t`, `s`, `an`, `cl`, `p`, `cov`, `pub`, `w`, `tmpl`).
+     - `test_signal_handling.py` -- SIGINT propagation, exit code 130 ([ARCHITECTURE.md §Signal Handling](ARCHITECTURE.md#signal-handling)).
+   - `tests/CI.md` -- an operator runbook for running the suite locally via `tests/container/run.sh`.
+   - *Green when:* `bash tests/container/run.sh` passes against a real Adamant container, and the four-command gate (including `test_architecture.py`) passes locally.
+2. **`gate.yml` -- the four-command gate in CI.**
+   - `.github/workflows/gate.yml` (Linux + macOS matrix), `.uv-version`, `.gitignore` additions (`gate-junit.xml`, `coverage.xml`, `_artifacts/`), `tests/ci_assets/admt-dark.css`.
+   - `tests/unit/test_ci_alignment.py` (`gate.yml` now exists to assert against) and `tests/unit/test_pin_audit.py` (the `PINS` manifest covers `uv`, `python`, the third-party-action SHA convention, and the Adamant pair from step 1's `_pins.env`, with `test_no_orphan_adamant_tags`).
+   - A CLAUDE.md `## CI` section pointing to this plan and the local gate commands; README gate badge.
+   - *Green when:* the four-command gate passes on the matrix.
+3. **`container.yml` -- the tier-3 suite in CI.**
+   - `.github/workflows/container.yml` invokes `tests/container/run.sh` on every non-draft PR and every push to `main`; `tests/unit/test_ci_alignment.py` gains the `container.yml`-invokes-`run.sh` assertion; README container badge.
+   - *Green when:* `container.yml` drives the step-1 suite on a non-draft PR.
+4. **Release, upstream-contract, and polish -- deferred to their own plan + PR.** `release.yml` (PyPI trusted publishing, TestPyPI smoke, optional ARM64), `upstream.yml` (weekly tier-3 against `:latest`, drift issue template, `tests/contract/` format tests), and polish (ARM64 verification, Codecov, status badges, whole-file-size trip-wire, plugin-author CI template) are out of scope for the implementation PR; the [release.yml](#workflow-releaseyml-roadmap) and [upstream.yml](#workflow-upstreamyml-roadmap) sections carry enough to spec that follow-on effort when it's prioritized.
 
 ---
 
