@@ -728,7 +728,7 @@ Cloning standalone Adamant at a pinned ref keeps tier 3 honest about what it is:
 
 ### Multi-Repo Configuration (Follow-Up)
 
-Standalone Adamant is the default tier-3 fixture configuration. A `multi-repo` configuration is the planned second matrix leg: it tests admt against a layout that mounts more than one repo (e.g., adamant + a stub component repo). The multi-repo fixture clones two repos into `_workspace/` and ships a hand-written compose file that mounts both. Path-mapping bugs that only manifest with multiple bind mounts are caught here.
+Standalone Adamant is the default tier-3 fixture configuration. A `multi-repo` configuration is the planned second matrix leg: it exercises path-mapping against a layout whose compose mounts more than one repository. Rather than fabricate a stub component repo, the leg uses a public reference Adamant project whose compose already mounts multiple repositories -- e.g. `lasp/adamant_example` -- cloned at a pinned ref into `_workspace/`, so the fixture mirrors a layout developers actually use. Path-mapping bugs that only manifest with multiple bind mounts are caught here.
 
 ### Worktree Configuration Coverage
 
