@@ -297,7 +297,7 @@ The container job ships single-config (`project: standalone`) and grows along or
 
 - `project: [standalone, multi-repo]` -- exercises path-mapping against single-mount and multi-mount Adamant project shapes. Follow-up after standalone is stable.
 - `os: [ubuntu-24.04, macos-14]` -- when admt grows tier-3-relevant macOS coverage. Currently macOS doesn't ship a usable Adamant container; this axis stays single-OS until upstream changes.
-- `adamant_pin: [<current>, <next>]` -- spot-check during an Adamant version rollout to validate forward compatibility without committing the bump.
+Version-drift across Adamant releases is deliberately **not** a PR/push matrix axis: PR and push CI pin a single image for determinism, and [`upstream.yml`](#workflow-upstreamyml-roadmap) (weekly, against `:latest`) is the early-warning signal for upstream Adamant drift.
 
 **Antipattern: per-command matrix.** Decomposing tier 3 into one matrix leg per admt command (`{command: [build, test, style, ...]}`) is the wrong shape: each leg is a fresh runner with a fresh container, paying the full pull + activate cost (5-10 minutes) for ~30 seconds of test work. Per-test rendering already comes from the JUnit + `mikepenz/action-junit-report` path -- splitting commands into matrix legs adds runtime without buying isolation we need.
 
