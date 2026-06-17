@@ -57,7 +57,7 @@ This list is also the test plan for whether CI is doing its job. If a future dri
 - **The four-command quality gate**, run on every push and every pull request, on Linux and macOS. The gate is the same gate developers run locally; CI is the second eye, not a different bar.
 - **Tier 3 container tests**, run on every non-draft pull request and every push to `main`. Tier 3 is the spec-conformance backstop named in [TEST_PLAN.md §Tier 3](TEST_PLAN.md#tier-3-container-tests).
 - **Per-command, per-flag, per-alias coverage** -- every concrete `Command` subclass, every short alias (`e`, `b`, `t`, `s`, `an`, `cl`, `p`, `cov`, `pub`, `w`, `tmpl`), and every global flag and env variable in [TEST_PLAN.md §What to Test](TEST_PLAN.md#what-to-test) is exercised at the appropriate tier.
-- **Architectural self-audit** -- a parametrized test that walks every `Command`, `Service`, and `Adapter` module and asserts test-file coverage exists at the right tier for each. The audit fails when a contributor adds a new command without writing tests for it.
+- **Architectural enforcement** -- `tests/unit/test_architecture.py` (per [TEST_PLAN.md §Architectural Enforcement Tests](TEST_PLAN.md#architectural-enforcement-tests)) enforces the layering, `Command` metadata, and CLI↔Command parity rules. A per-command-right-tier self-audit is **deferred** -- the coverage gate already forces every command to be tested (see [Architectural Self-Audit](#architectural-self-audit)).
 - **Local rehearsal via a host script** -- tier-3 workflow logic is exposed as `tests/container/run.sh`, the single entry point CI invokes and developers run locally, so the test logic is rehearsable on any host with Docker without a separate local Actions runner.
 - **Toolchain pinning** for `uv`, the Python interpreter, the Adamant container image, and any GitHub Actions third-party action versions.
 - **Failure forensics** -- every failure produces an artifact bundle with provenance metadata (commit SHA, run ID, branch, OS) and human-navigable HTML reports.
@@ -70,7 +70,7 @@ This list is also the test plan for whether CI is doing its job. If a future dri
 - **Upstream contract tests** -- a weekly schedule that re-runs tier 3 against the latest `ghcr.io/lasp/adamant:*` image so we notice when an Adamant change breaks our integration.
 - **Status badges** in `README.md` (gate, container, release, upstream).
 - **Codecov** or equivalent coverage trend dashboard.
-- **Plugin-author CI template** -- the same self-audit + gate definition packaged for plugin authors to reuse.
+- **Plugin-author CI template** -- the gate definition packaged for plugin authors to reuse.
 
 ### Non-Goals
 
@@ -78,7 +78,7 @@ This list is also the test plan for whether CI is doing its job. If a future dri
 - **No hidden CI-only commands.** Anything CI runs is either (a) one of the four gate commands, (b) `pytest -m container` for tier 3, (c) a documented packaging command. No bespoke "CI thinks the gate is X" pseudo-checks.
 - **No new top-level directory.** Workflow files live in `.github/workflows/`. CI helper assets live in `tests/ci_assets/`. There is no `ci/` or `scripts/` top-level directory.
 - **No Windows runners.** Per [CODING_RULES.md §Language and Runtime](CODING_RULES.md#language-and-runtime), Windows is not yet a target. CI matches the spec.
-- **No `act` dependency.** admt does not require, ship, or document [`act`](https://github.com/nektos/act) recipes. Workflow logic that can run locally is exposed through `tests/container/run.sh`, which CI and developers invoke identically; the gate's four commands run locally on their own. act's usefulness did not justify its complexity for this project.
+- **No `act` dependency.** admt does not require, ship, or document [`act`](https://github.com/nektos/act) recipes. Tier-3 workflow logic is exposed through `tests/container/run.sh`, which CI and developers invoke identically, and the gate's four commands run locally on their own -- local rehearsal needs a Docker daemon and the host script, not a workflow-runner emulator.
 
 ---
 
@@ -109,7 +109,7 @@ Tier 3 catches the spec-vs-implementation drift the local gate cannot. It must r
 
 ### CI4. Every Command, Every Flag, Every Alias
 
-Tier 3 exercises every concrete `Command` subclass, every short alias, and every global flag listed in [TEST_PLAN.md §What to Test](TEST_PLAN.md#what-to-test). The mapping is enforced by the [architectural self-audit](#architectural-self-audit), not by hand-maintained tables. A new command added to `src/admt/commands/` without a tier-3 test fails the gate; a new alias added to `cli.py` without a tier-3 test fails the gate.
+Tier 3 exercises every concrete `Command` subclass, every short alias, and every global flag listed in [TEST_PLAN.md §What to Test](TEST_PLAN.md#what-to-test). Covering that surface is the tier-3 suite's own responsibility, backstopped by the 100% coverage gate and `test_architecture.py`'s command/CLI-parity test. A dedicated per-command-right-tier introspection audit that would mechanically enforce the mapping is **deferred** (see [Architectural Self-Audit](#architectural-self-audit)).
 
 ### CI5. Local-Rehearsable via a Host Script
 
@@ -589,267 +589,25 @@ The 24 concrete commands (see [Appendix C](#appendix-c-command-inventory)) split
 
 ### Per-Alias Coverage
 
-11 aliases in `cli.py` (`e`, `b`, `t`, `s`, `an`, `cl`, `p`, `cov`, `pub`, `w`, `tmpl`). Tier 3 confirms each invokes the right command with one minimal test per alias. The alias inventory is enumerated by reading `cli.py`'s `add_alias` calls -- the [self-audit](#architectural-self-audit) catches any alias that has no corresponding test.
+11 aliases in `cli.py` (`e`, `b`, `t`, `s`, `an`, `cl`, `p`, `cov`, `pub`, `w`, `tmpl`). Tier 3 confirms each invokes the right command with one minimal test per alias (`test_aliases.py`).
 
 ### How the Matrix Stays Honest
 
-Hand-maintained tables drift. The matrix is enforced by parametrized tests in `tests/unit/test_command_test_coverage.py` that walk the actual `Command` subclasses, `cli.py` aliases, and the Click option tree at runtime. A new command, alias, global flag, subcommand flag, or env-var flag added without the corresponding tier-2/tier-3 test fails the gate immediately -- discovery is dynamic, no hand-edited list to forget. See [Architectural Self-Audit](#architectural-self-audit).
+Hand-maintained tables drift, so this matrix is a *specification* of intent, not a hand-checked list: the tier-3 suite implements it, and the 100% coverage gate plus `test_architecture.py` keep every command and alias exercised by some test. A parametrized introspection audit that would mechanically assert each command/alias/flag has a test *at the right tier* is deferred until the tier-3 suite exists (see [Architectural Self-Audit](#architectural-self-audit)).
 
 ---
 
 ## Architectural Self-Audit
 
-admt's architecture is predictable enough -- one class per command, fixed directory layout, declarative metadata on each command -- that "is this code tested?" can be answered by walking the class hierarchy and grepping the test tree, not by maintaining a separate matrix.
+Architectural enforcement lives in `tests/unit/test_architecture.py` (see [TEST_PLAN.md §Architectural Enforcement Tests](TEST_PLAN.md#architectural-enforcement-tests)): it asserts the import/dependency rules, the `Command` metadata contract, CLI↔Command parity (every `Command` has a Click entry and vice versa), the `cli.py` size cap, and the no-circular-imports rule. This plan relies on it as the architectural baseline; the gate runs it like any other tier-1 test.
 
-A new test module, `tests/unit/test_command_test_coverage.py`, runs as part of the gate ([CI1](#ci1-same-gate-from-a-clean-machine)). It is parametrized across every concrete `Command`, `Service`, and `Adapter` and asserts coverage at the right tier.
+A more aggressive **per-command-right-tier self-audit** -- a `tests/unit/test_command_test_coverage.py` that parametrizes over every command, alias, and flag and asserts a test exists at each tier -- is **deferred**, not part of the initial CI surface:
 
-### Sketch
+- The 100% line + branch coverage gate ([CI2](#ci2-the-coverage-threshold-is-hard)) already forces every command to be exercised by *some* test; a no-op test leaves coverage holes the gate fails on.
+- The audit's only marginal guarantee over coverage is "tested at the *right tier*." That is meaningful only once a tier-3 suite exists to be the right tier -- which is after the tier-3 tests are written and green (see [Implementation Order](#implementation-order)). Until then, a runtime-introspection audit adds maintenance surface without a guarantee the coverage gate does not already provide.
+- Revisit once tier 3 is in place: if "every container-touching command has a tier-3 test" proves worth guarding against regression, add *that arm only* then.
 
-```python
-"""Architectural-coverage self-audit -- every command/service/adapter has a test."""
-
-from pathlib import Path
-import pytest
-import importlib, pkgutil
-
-import admt.commands, admt.services, admt.adapters
-from admt.commands.base import Command, ContainerPassthroughCommand
-
-
-def _all_concrete_command_subclasses() -> list[type[Command]]:
-    """Same helper used by tests/unit/test_architecture.py."""
-    for info in pkgutil.walk_packages(admt.commands.__path__, prefix="admt.commands."):
-        importlib.import_module(info.name)
-    result = []
-    stack = list(Command.__subclasses__())
-    while stack:
-        cls = stack.pop()
-        if cls is ContainerPassthroughCommand:
-            stack.extend(cls.__subclasses__())
-            continue
-        if not getattr(cls, "__abstractmethods__", set()):
-            result.append(cls)
-        stack.extend(cls.__subclasses__())
-    return result
-
-
-def _test_dir_contains(directory: Path, needle: str) -> bool:
-    """Search every test file under directory for `needle` (substring match)."""
-    return any(needle in p.read_text() for p in directory.rglob("test_*.py"))
-
-
-@pytest.mark.parametrize("cls", _all_concrete_command_subclasses(), ids=lambda c: c.name)
-def test_command_has_tier1_test(cls):
-    assert _test_dir_contains(Path("tests/unit/commands"), cls.__name__), (
-        f"{cls.__name__} ({cls.name!r}) has no tier-1 test in tests/unit/commands/"
-    )
-
-
-@pytest.mark.parametrize("cls", _all_concrete_command_subclasses(), ids=lambda c: c.name)
-def test_command_has_tier2_test(cls):
-    # Tier 2 references commands by their CLI name, not their Python class name.
-    assert _test_dir_contains(Path("tests/integration"), f'"{cls.name.split()[0]}"'), (
-        f"{cls.name!r} has no tier-2 test in tests/integration/"
-    )
-
-
-@pytest.mark.parametrize("cls", _all_concrete_command_subclasses(), ids=lambda c: c.name)
-def test_command_has_tier3_test(cls):
-    if not cls.requires_container and cls.name not in {"env init", "env use", "env list"}:
-        pytest.skip("not a container-touching command and not a config-only command")
-    assert _test_dir_contains(Path("tests/container"), f'"{cls.name.split()[0]}"'), (
-        f"{cls.name!r} has no tier-3 test in tests/container/"
-    )
-
-
-def _aliases_in_cli_py() -> list[tuple[str, str]]:
-    """Parse cli.py for `add_alias("alias", "command")` calls."""
-    import re
-    src = Path("src/admt/cli.py").read_text()
-    return re.findall(r'add_alias\(\s*"([^"]+)",\s*"([^"]+)"\s*\)', src)
-
-
-@pytest.mark.parametrize("alias,target", _aliases_in_cli_py(), ids=lambda v: v[0] if isinstance(v, tuple) else v)
-def test_alias_has_tier2_test(alias, target):
-    assert _test_dir_contains(Path("tests/integration"), f'"{alias}"'), (
-        f"alias {alias!r} -> {target!r} has no tier-2 invocation test"
-    )
-
-
-@pytest.mark.parametrize("alias,target", _aliases_in_cli_py())
-def test_alias_has_tier3_test(alias, target):
-    assert _test_dir_contains(Path("tests/container"), f'"{alias}"'), (
-        f"alias {alias!r} -> {target!r} has no tier-3 invocation test"
-    )
-
-
-# ---- flag coverage ---------------------------------------------------------
-# Flags are a first-class user-facing surface. The audit walks every Click
-# Option in cli.py (global + subcommand) and every env-var "flag" from
-# TEST_PLAN.md §What to Test, and asserts each appears in at least one tier-2
-# and one tier-3 test. Discovery is runtime introspection of the Click tree;
-# new flags are picked up automatically.
-
-import click as _click
-from admt.cli import cli as _cli
-
-
-def _global_flags() -> list[str]:
-    """Long-form names (with leading --) of every global option."""
-    return [
-        opt
-        for p in _cli.params
-        if isinstance(p, _click.Option)
-        for opt in p.opts
-        if opt.startswith("--") and opt != "--version"
-    ]
-
-
-def _subcommand_flags() -> list[tuple[str, str]]:
-    """(`command name`, `--flag`) pairs for every subcommand-scoped option."""
-    pairs: list[tuple[str, str]] = []
-
-    def _walk(grp: _click.Group, prefix: str = "") -> None:
-        for name, cmd in grp.commands.items():
-            full = f"{prefix} {name}".strip()
-            if isinstance(cmd, _click.Group):
-                _walk(cmd, full)
-                continue
-            for p in cmd.params:
-                if not isinstance(p, _click.Option):
-                    continue
-                for opt in p.opts:
-                    if opt.startswith("--"):
-                        pairs.append((full, opt))
-
-    _walk(_cli)
-    return pairs
-
-
-# Env-var flags from TEST_PLAN.md §What to Test. The "value-semantics" entry
-# for ADMT_NONINTERACTIVE=0 is encoded as a separate row so the audit catches
-# that specific test missing even when the on-state test is present.
-ENV_VAR_FLAGS: list[str] = [
-    "ADMT_NONINTERACTIVE",
-    "ADMT_NONINTERACTIVE=0",
-    "ADMT_ENV",
-    "NO_COLOR",
-]
-
-
-@pytest.mark.parametrize("flag", _global_flags(), ids=lambda f: f)
-def test_global_flag_has_tier2_test(flag: str):
-    assert _test_dir_contains(Path("tests/integration"), f'"{flag}"'), (
-        f"global flag {flag!r} has no tier-2 test in tests/integration/"
-    )
-
-
-@pytest.mark.parametrize("flag", _global_flags(), ids=lambda f: f)
-def test_global_flag_has_tier3_test(flag: str):
-    assert _test_dir_contains(Path("tests/container"), f'"{flag}"'), (
-        f"global flag {flag!r} has no tier-3 test in tests/container/"
-    )
-
-
-@pytest.mark.parametrize(
-    "command,flag",
-    _subcommand_flags(),
-    ids=lambda v: v if isinstance(v, str) else f"{v[0]}{v[1]}",
-)
-def test_subcommand_flag_has_tier2_test(command: str, flag: str):
-    """For each (command, flag) pair, assert the flag appears in a test
-    file alongside the command's verb. The matcher is loose -- we don't
-    require the test to be *for* this command, only that the flag is
-    exercised somewhere at tier 2."""
-    assert _test_dir_contains(Path("tests/integration"), flag), (
-        f"subcommand flag {command!r} {flag!r} has no tier-2 test"
-    )
-
-
-@pytest.mark.parametrize(
-    "command,flag",
-    _subcommand_flags(),
-    ids=lambda v: v if isinstance(v, str) else f"{v[0]}{v[1]}",
-)
-def test_subcommand_flag_has_tier3_test(command: str, flag: str):
-    assert _test_dir_contains(Path("tests/container"), flag), (
-        f"subcommand flag {command!r} {flag!r} has no tier-3 test"
-    )
-
-
-@pytest.mark.parametrize("var", ENV_VAR_FLAGS, ids=lambda v: v)
-def test_env_var_flag_has_tier2_test(var: str):
-    assert _test_dir_contains(Path("tests/integration"), var), (
-        f"env-var flag {var!r} has no tier-2 test"
-    )
-
-
-@pytest.mark.parametrize("var", ENV_VAR_FLAGS, ids=lambda v: v)
-def test_env_var_flag_has_tier3_test(var: str):
-    assert _test_dir_contains(Path("tests/container"), var), (
-        f"env-var flag {var!r} has no tier-3 test"
-    )
-
-
-# Service modules -- each has a test file at tests/unit/services/test_<name>.py
-@pytest.mark.parametrize(
-    "module_path",
-    [p for p in Path("src/admt/services").glob("*.py") if p.stem != "__init__"],
-    ids=lambda p: p.stem,
-)
-def test_service_has_unit_test(module_path):
-    expected = Path(f"tests/unit/services/test_{module_path.stem}.py")
-    if not expected.exists():
-        # Allow split files like test_container_lifecycle.py + test_container_exec.py
-        siblings = list(expected.parent.glob(f"test_{module_path.stem}*.py"))
-        assert siblings, f"services/{module_path.name} has no test file in tests/unit/services/"
-
-
-@pytest.mark.parametrize(
-    "module_path",
-    [p for p in Path("src/admt/adapters").glob("*.py") if p.stem != "__init__"],
-    ids=lambda p: p.stem,
-)
-def test_adapter_has_unit_test(module_path):
-    expected = Path(f"tests/unit/adapters/test_{module_path.stem}.py")
-    assert expected.exists(), (
-        f"adapters/{module_path.name} has no test file at {expected}"
-    )
-```
-
-### What This Catches
-
-- A new command class added to `commands/` with no tests.
-- A new alias added to `cli.py` with no tier-2 or tier-3 invocation.
-- A new service module added with no unit-test file.
-- A new adapter module added with no unit-test file.
-- A `requires_container=True` command added with no tier-3 test (the most common drift).
-- **A new flag added to `cli.py` (global or subcommand) with no tier-2 or tier-3 test.** Flag discovery is runtime introspection of the Click tree, so adding `@click.option("--my-flag")` to any command immediately puts a row in the audit; the audit fails until a test mentions the flag at the right tier.
-- **A new env-var flag (`ADMT_*`, `NO_COLOR`, etc.) referenced in code without a corresponding test.** The env-var list is hardcoded against TEST_PLAN.md §What to Test; adding a new env-var flag is a two-edit change (the `ENV_VAR_FLAGS` list plus the test) and the audit ensures the test edit isn't forgotten.
-
-### What This Does Not Catch
-
-The audit is a structural check: it confirms a test *exists*, not that the test is *good*. A test that imports the class but asserts nothing meaningful passes the audit. That gap is filled by the 100% line + branch coverage gate ([CI2](#ci2-the-coverage-threshold-is-hard)) -- a no-op test that doesn't actually call the command's `execute()` method leaves coverage holes that the gate fails on. Audit + coverage gate together close the loop.
-
-### Per-Tier Scenario Audit (Follow-Up)
-
-A more aggressive variant walks the [scenarios from TEST_PLAN.md §What to Test](#per-command-coverage-matrix) and asserts each `(command, scenario)` pair has a corresponding test. This requires test functions to be named in a structured way (e.g., `test_<command>_<scenario>`), and is more invasive than the structural audit. Recommended as a follow-up after the structural audit has been in place long enough that contributors are used to the test-naming convention.
-
-### Plugin Compatibility (Forward-Looking)
-
-When the plugin system ([ROADMAP.md](ROADMAP.md) Tier 5) lands, plugin authors register `Command` subclasses via Python entry points. The same self-audit machinery extends naturally:
-
-- The audit discovers plugin commands the same way it discovers built-in commands -- via `Command.__subclasses__()` after entry-point loading.
-- Plugin authors point the audit at their plugin's test directory via a config setting in `pyproject.toml`:
-
-  ```toml
-  [tool.admt.ci]
-  test_dirs = { tier1 = "tests/unit", tier2 = "tests/integration", tier3 = "tests/container" }
-  ```
-
-- A plugin author's CI imports admt's audit fixture and runs it against their own commands.
-
-This is forward-looking; the convention should be considered when designing the plugin system, but the initial CI surface does not need to support it.
+Until then, "is each command tested?" is answered by the coverage gate plus `test_architecture.py`'s parity test -- not by a separate introspection audit.
 
 ---
 
@@ -860,7 +618,7 @@ Every CI run produces two surfaces, each carrying one signal:
 - **In-PR check view** (auto-rendered by GitHub from JUnit) -- per-test pass/fail, scannable on the PR's "Checks" tab without leaving the browser. Powered by [`mikepenz/action-junit-report@v4`](https://github.com/mikepenz/action-junit-report). One step in each workflow, one POSTed check-run per job.
 - **Downloadable artifact bundle** (uploaded by `actions/upload-artifact@v4`) -- forensic detail when a failure needs more than the check view: themed coverage HTML (per-file line + branch drilldown), raw JUnit XML, raw coverage XML (Cobertura, for codecov-style consumers), and tier-3-only diagnostics (`docker compose logs`, version stamps).
 
-The audit results (self-audit, pin-parity, spec-alignment) are pytest tests; their PASS/FAIL surfaces in the same JUnit-rendered check view as everything else. A reviewer who wants more than "PASS" clicks the test name in the check view and gets the assertion message verbatim from JUnit -- which already names the disagreeing file or missing test for parametrized failures. The custom dashboard renderer is intentionally absent; coverage HTML is the only piece worth owning the rendering of, and the `--extra-css` hook does that without owning anything else.
+The audit results (pin-parity, spec-alignment) are pytest tests; their PASS/FAIL surfaces in the same JUnit-rendered check view as everything else. A reviewer who wants more than "PASS" clicks the test name in the check view and gets the assertion message verbatim from JUnit -- which already names the disagreeing file or missing test for parametrized failures. The custom dashboard renderer is intentionally absent; coverage HTML is the only piece worth owning the rendering of, and the `--extra-css` hook does that without owning anything else.
 
 ### Bundle Layout
 
@@ -1021,8 +779,6 @@ This refinement lives in TEST_PLAN.md §Test Tiers §Tier 2 as the long-term hom
 
 - **The gate-command strings in `gate.yml` match `TEST_PLAN.md` byte-for-byte** (modulo the `--junitxml=...` and `-m "not container"` extensions documented in [CI1](#ci1-same-gate-from-a-clean-machine)).
 - **`container.yml` invokes `tests/container/run.sh`** -- so CI and local rehearsal share one entry point.
-- **Every `Command` subclass listed in [Appendix C](#appendix-c-command-inventory) appears at least once in `tests/container/`** (the structural arm of the [self-audit](#architectural-self-audit)).
-- **Every alias defined via `add_alias` in `cli.py` appears at least once in `tests/integration/` and once in `tests/container/`.**
 
 ```python
 # tests/unit/test_ci_alignment.py
@@ -1285,11 +1041,11 @@ The audit runs in tier 1, costs a few milliseconds, and fails parametrized so co
 
 ## Implementation Order
 
-The first CI PR ships gate.yml plus the alignment tests and the self-audit. Tier 3 follows in a second PR because it has materially more setup. Roadmap workflows follow in their own PRs.
+The first CI PR ships gate.yml plus the alignment and pin-parity tests. Tier 3 follows in a second PR because it has materially more setup. Roadmap workflows follow in their own PRs.
 
 **Each PR opens green** -- it merges only when its own gate run passes against the proposed workflow.
 
-### PR 1: gate.yml + alignment + self-audit (structural only)
+### PR 1: gate.yml + alignment
 
 - `.github/workflows/gate.yml` -- the four-command gate, Linux + macOS matrix.
 - `.uv-version` -- pin uv to the version that wrote the current `uv.lock`.
@@ -1297,7 +1053,6 @@ The first CI PR ships gate.yml plus the alignment tests and the self-audit. Tier
 - `tests/ci_assets/admt-dark.css` -- the coverage-HTML theme.
 - `tests/unit/test_ci_alignment.py` -- the spec/CI sync tests.
 - `tests/unit/test_pin_audit.py` -- the version-pin parity audit. The initial `PINS` manifest covers `uv`, `python`, and the third-party-action SHA convention; the Adamant pair (`ADAMANT_TAG`/`ADAMANT_REF`) joins the manifest when `_pins.env` lands alongside the container workflow.
-- `tests/unit/test_command_test_coverage.py` -- the structural self-audit (parametrized over commands/services/adapters/aliases plus the global, subcommand, and env-var flag families). The tier-3 arm of every audit family is conditional: it skips when `tests/container/` is empty, so the gate workflow can land before tier-3 tests exist. The tier-2 arm runs unconditionally -- existing `tests/integration/` tests already exercise most flags, and the audit makes the coverage explicit.
 - One CLAUDE.md update: a `## CI` section pointing to this plan and to the local gate commands.
 - README badge for gate status.
 
@@ -1305,7 +1060,7 @@ The PR does *not* touch ARCHITECTURE.md, CODING_RULES.md, or TEST_PLAN.md, excep
 
 The PR's acceptance is the four-command gate green locally before pushing -- gate.yml's steps are exactly those commands.
 
-### PR 2: container.yml + tier-3 tests + activate full self-audit
+### PR 2: container.yml + tier-3 tests
 
 - `.github/workflows/container.yml`.
 - `tests/container/_pins.env` -- the Adamant tag/ref pair file (see [Paired Pins](#paired-pins-and-_pinsenv)). Adds the `ADAMANT_TAG` and `ADAMANT_REF` entries to the `PINS` manifest in `tests/unit/test_pin_audit.py`, and turns on `test_no_orphan_adamant_tags`.
@@ -1325,7 +1080,6 @@ The PR's acceptance is the four-command gate green locally before pushing -- gat
   - `test_signal_handling.py` -- SIGINT propagation, exit code 130 ([ARCHITECTURE.md §Signal Handling](ARCHITECTURE.md#signal-handling)).
 - `tests/CI.md` -- an operator runbook for running tier 3 locally via `tests/container/run.sh` (operator instructions rather than spec).
 - README badge for container status.
-- The previously-conditional tier-3 arm of the self-audit is enabled (no longer skipping; if a command is missing tier-3 coverage, the gate fails).
 
 The PR's quality gate acceptance includes:
 
@@ -1366,8 +1120,7 @@ Every workflow change goes through this checklist before merge:
 1. **A YAML parse/lint of the workflow file** passes (catches syntax errors before push).
 2. **`bash tests/container/run.sh` succeeds locally** against a real Adamant container (for container.yml; gate.yml's acceptance is its four gate commands green locally).
 3. **The drift-prevention tests in `tests/unit/test_ci_alignment.py`** still pass.
-4. **The self-audit in `tests/unit/test_command_test_coverage.py`** still passes.
-5. **The PR description includes the local run output** of step 2 (a short paste, not the full log) -- so the reviewer sees the rehearsal happened.
+4. **The PR description includes the local run output** of step 2 (a short paste, not the full log) -- so the reviewer sees the rehearsal happened.
 
 ### Per-Job Acceptance
 
@@ -1452,17 +1205,16 @@ Do **not** defer:
 
 - The four-command gate ([CI1](#ci1-same-gate-from-a-clean-machine)).
 - The 100% coverage threshold ([CI2](#ci2-the-coverage-threshold-is-hard)).
-- The architectural self-audit's command/service/adapter/alias/flag arms ([CI4](#ci4-every-command-every-flag-every-alias)).
 - The version-pin parity audit's local arm (`uv`, `python`, third-party-action SHA-pin format -- not necessarily the comment-version pairing).
 - The drift-prevention tests in `tests/unit/test_ci_alignment.py` for the gate command and run-script invocation.
 
-These five are the load-bearing safety net. Everything else is decoration on top.
+These four are the load-bearing safety net. Everything else is decoration on top.
 
 ---
 
 ## Roadmap
 
-The initial CI surface is deliberately small: gate.yml + container.yml + alignment + self-audit. Everything below is real and useful, but it builds on that surface and should not delay it from landing.
+The initial CI surface is deliberately small: gate.yml + container.yml + alignment. Everything below is real and useful, but it builds on that surface and should not delay it from landing.
 
 ### Near-term (within a release or two of the initial CI surface shipping)
 
@@ -1528,7 +1280,7 @@ These are *order-of-magnitude* estimates, not commitments. Wall times are domina
 
 ## Appendix C: Command Inventory
 
-24 concrete `Command` subclasses on `main`. Auto-generated from `admt.commands.*`; the [self-audit](#architectural-self-audit) keeps the generator and the tier-3 coverage in sync. Three categories:
+24 concrete `Command` subclasses on `main`, mirroring [ARCHITECTURE.md §Command Reference](ARCHITECTURE.md#command-reference). Three categories:
 
 ### Pure host (no project, no container)
 
@@ -1585,7 +1337,7 @@ These are *order-of-magnitude* estimates, not commitments. Wall times are domina
 | `w` | `what` | 2 + 3 |
 | `tmpl` | `templates` | 2 + 3 |
 
-The self-audit parametrizes over both tables and asserts each entry has at least one test invocation in the right tier directory.
+The tier-3 suite covers both tables -- one minimal test invocation per command and per alias.
 
 ---
 
