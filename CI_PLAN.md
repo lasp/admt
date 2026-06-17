@@ -1,6 +1,6 @@
 # admt CI Plan
 
-This document specifies how admt's continuous-integration pipeline implements the testing strategy from [TEST_PLAN.md](TEST_PLAN.md), the architectural guarantees from [ARCHITECTURE.md](ARCHITECTURE.md), and the authoring rules from [CODING_RULES.md](CODING_RULES.md). It is a planning spec, not a runbook -- the runbook recipes for [`act`](https://github.com/nektos/act) live further down because the rehearsal story is a first-class concern of the design.
+This document specifies how admt's continuous-integration pipeline implements the testing strategy from [TEST_PLAN.md](TEST_PLAN.md), the architectural guarantees from [ARCHITECTURE.md](ARCHITECTURE.md), and the authoring rules from [CODING_RULES.md](CODING_RULES.md). It is a planning spec for the workflow files and their supporting test scaffolding, not a runbook.
 
 admt has no CI today. The local four-command gate ([TEST_PLAN.md §Quality Gate](TEST_PLAN.md#quality-gate)) is the only gate, and it has held: full line + branch coverage, ruff/mypy clean. CI exists to close the gaps the local gate cannot solve: spec-vs-implementation drift, drift between code and CI itself, lockfile churn, and the merge-as-test problem where independently-green PRs are not validated as a coherent whole until after they land.
 
@@ -18,7 +18,6 @@ This plan is the spec for the CI implementation that follows. Like every admt sp
 - [Workflow: container.yml](#workflow-containeryml)
 - [Workflow: release.yml (Roadmap)](#workflow-releaseyml-roadmap)
 - [Workflow: upstream.yml (Roadmap)](#workflow-upstreamyml-roadmap)
-- [act Rehearsal Protocol](#act-rehearsal-protocol)
 - [Tier 3 Fixture Strategy](#tier-3-fixture-strategy)
 - [Per-Command Coverage Matrix](#per-command-coverage-matrix)
 - [Architectural Self-Audit](#architectural-self-audit)
@@ -33,22 +32,19 @@ This plan is the spec for the CI implementation that follows. Like every admt sp
 - [Appendix A: Trigger and Permission Matrix](#appendix-a-trigger-and-permission-matrix)
 - [Appendix B: Job Reference](#appendix-b-job-reference)
 - [Appendix C: Command Inventory](#appendix-c-command-inventory)
-- [Appendix D: act Capability Matrix (Verified)](#appendix-d-act-capability-matrix-verified)
-- [Appendix E: Glossary](#appendix-e-glossary)
+- [Appendix D: Glossary](#appendix-d-glossary)
 
 ---
 
 ## Why CI Now
 
-The project retrospectives named four problems the local gate is structurally unable to solve. Each one is a specific failure mode CI is designed to catch:
+The project retrospectives named three problems the local gate is structurally unable to solve. Each one is a specific failure mode CI is designed to catch:
 
 1. **Spec-vs-implementation drift is invisible until tier 3 runs.** Tier 1+2 tests pin on exception classes; the user-facing exit code is observable only by running the real binary. Several exit-code mismatches stayed latent for the whole pre-CI period because no tier-1 test pinned on the user-facing exit code, and no tier-3 suite existed to catch the discrepancy at the binary boundary. CI is where tier 3 finally runs continuously.
 
 2. **Single-day batch-merge made the merge itself the test.** Multiple PRs landed in the same window, each independently green, but the post-merge state on `main` was not validated as a single coherent run before the merges. CI on every push to `main` provides exactly that validation -- a clean checkout of the merged tip, the four-command gate, and the tier-3 sweep, with no developer-machine state in the picture.
 
 3. **`uv.lock` churn slips into unrelated PRs.** Mechanical lockfile rewrites from uv-version drift have polluted the history more than once. The `uv.lock` policy paragraph is in [CODING_RULES.md §uv.lock policy](CODING_RULES.md#uvlock-policy); CI is where the policy gets *enforced*, by pinning the `uv` version that runs the gate so the reference rewrite is deterministic.
-
-4. **The act + Docker-Desktop interaction is non-obvious.** This CI work must be act-rehearsable locally. That is not free: act under Docker Desktop refuses to bind-mount the desktop socket into the runner unless File Sharing is configured, and the same docker-compose paths that work on cloud GHA need a specific fixture layout to work under act's `--bind` mode. The recipes -- and the boundary between "this works locally" and "this only works on cloud GHA" -- belong in this document, not in tribal knowledge.
 
 This list is also the test plan for whether CI is doing its job. If a future drift slips through CI without being caught here, that is a CI gap, not a development gap.
 
@@ -62,7 +58,7 @@ This list is also the test plan for whether CI is doing its job. If a future dri
 - **Tier 3 container tests**, run on every non-draft pull request and every push to `main`. Tier 3 is the spec-conformance backstop named in [TEST_PLAN.md §Tier 3](TEST_PLAN.md#tier-3-container-tests).
 - **Per-command, per-flag, per-alias coverage** -- every concrete `Command` subclass, every short alias (`e`, `b`, `t`, `s`, `an`, `cl`, `p`, `cov`, `pub`, `w`, `tmpl`), and every global flag and env variable in [TEST_PLAN.md §What to Test](TEST_PLAN.md#what-to-test) is exercised at the appropriate tier.
 - **Architectural self-audit** -- a parametrized test that walks every `Command`, `Service`, and `Adapter` module and asserts test-file coverage exists at the right tier for each. The audit fails when a contributor adds a new command without writing tests for it.
-- **Local rehearsal via `act` where possible**, with documented recipes covering both native Docker on Linux and Docker Desktop on macOS or Linux. Where act cannot rehearse a workflow (verified empirically; see [Appendix D](#appendix-d-act-capability-matrix-verified)), the workflow's logic is exposed as a host script (`tests/container/run.sh`) so CI and local share the same entry point even when act is unavailable.
+- **Local rehearsal via a host script** -- tier-3 workflow logic is exposed as `tests/container/run.sh`, the single entry point CI invokes and developers run locally, so the test logic is rehearsable on any host with Docker without a separate local Actions runner.
 - **Toolchain pinning** for `uv`, the Python interpreter, the Adamant container image, and any GitHub Actions third-party action versions.
 - **Failure forensics** -- every failure produces an artifact bundle with provenance metadata (commit SHA, run ID, branch, OS) and human-navigable HTML reports.
 - **Wheel build on every run.** `uv build` runs in the gate and uploads the wheel as an artifact on every push and PR, so packaging and entry-point breakage (`[project.scripts]` wiring, missing package data) surfaces immediately instead of first failing at release. Publishing that wheel to PyPI stays a release-only action ([release.yml](#workflow-releaseyml-roadmap)).
@@ -82,6 +78,7 @@ This list is also the test plan for whether CI is doing its job. If a future dri
 - **No hidden CI-only commands.** Anything CI runs is either (a) one of the four gate commands, (b) `pytest -m container` for tier 3, (c) a documented packaging command. No bespoke "CI thinks the gate is X" pseudo-checks.
 - **No new top-level directory.** Workflow files live in `.github/workflows/`. CI helper assets live in `tests/ci_assets/`. There is no `ci/` or `scripts/` top-level directory.
 - **No Windows runners.** Per [CODING_RULES.md §Language and Runtime](CODING_RULES.md#language-and-runtime), Windows is not yet a target. CI matches the spec.
+- **No `act` dependency.** admt does not require, ship, or document [`act`](https://github.com/nektos/act) recipes. Workflow logic that can run locally is exposed through `tests/container/run.sh`, which CI and developers invoke identically; the gate's four commands run locally on their own. act's usefulness did not justify its complexity for this project.
 
 ---
 
@@ -114,9 +111,9 @@ Tier 3 catches the spec-vs-implementation drift the local gate cannot. It must r
 
 Tier 3 exercises every concrete `Command` subclass, every short alias, and every global flag listed in [TEST_PLAN.md §What to Test](TEST_PLAN.md#what-to-test). The mapping is enforced by the [architectural self-audit](#architectural-self-audit), not by hand-maintained tables. A new command added to `src/admt/commands/` without a tier-3 test fails the gate; a new alias added to `cli.py` without a tier-3 test fails the gate.
 
-### CI5. act-Rehearsable Where Possible
+### CI5. Local-Rehearsable via a Host Script
 
-Every workflow file declares whether it is act-rehearsable, and if so, under which Docker host environment. The recipes are validated empirically (see [Appendix D](#appendix-d-act-capability-matrix-verified)), not assumed. Where act cannot rehearse a workflow's full intent, the workflow's logic is exposed as a host script in `tests/container/run.sh` (or equivalent) so a developer can rehearse the *test logic* locally even when the *workflow yaml itself* is not runnable. CI invokes the same host script, so the entry point is shared between cloud and local.
+Tier-3 workflow logic lives in a host script (`tests/container/run.sh`), not inlined in the workflow YAML. CI invokes the script and developers run the same script locally, so the test logic is rehearsable on any host with Docker and CI and local share one entry point. admt does not depend on a local GitHub-Actions runner (see [Non-Goals](#scope-and-non-goals)).
 
 ### CI6. Toolchain Pinning
 
@@ -231,7 +228,7 @@ strategy:
 6. **Run gate command 3**: `uv run mypy src/`.
 7. **Run gate command 4**: `uv run pytest --cov --cov-branch --cov-fail-under=100 --junitxml=gate-junit.xml -m "not container"`.
 8. **Generate themed coverage HTML** (always) -- `uv run coverage html --extra-css tests/ci_assets/admt-dark.css --title "admt coverage @ ${SHORT_SHA}"`.
-9. **Surface per-test results** (always) -- `mikepenz/action-junit-report` posts the JUnit XML as a check-run (see [Artifacts and Provenance](#artifacts-and-provenance)); skipped under act.
+9. **Surface per-test results** (always) -- `mikepenz/action-junit-report` posts the JUnit XML as a check-run (see [Artifacts and Provenance](#artifacts-and-provenance)).
 10. **Upload artifact bundle** (always) -- `actions/upload-artifact@v4` with everything in `_artifacts/` (coverage HTML, coverage XML, JUnit XML, log tail). Name: `gate-${{ matrix.os }}-${{ github.sha }}`.
 11. **Post step summary** (always) -- a tabular summary on `$GITHUB_STEP_SUMMARY` with gate command results, coverage %, and a link to the artifact.
 
@@ -251,11 +248,9 @@ jobs:
       contents: read
 ```
 
-### act Compatibility
+### Docker-free gate
 
-`act -j gate` runs this workflow locally on Linux. The macOS leg cannot be rehearsed under act (act runs Linux containers). All steps are act-compatible because the gate does not need a Docker daemon. See [Recipe: gate](#recipe-gate).
-
-The docker-free property is load-bearing and deliberate: tier 1+2 inject a fake compose resolver, so the only places that shell `docker compose config` are `env init`/`env refresh` at runtime (and therefore tier 3). A unit or integration test that invokes the real resolver would silently make the gate require a docker CLI -- treat that as a defect, not a dependency to install on the runner.
+The gate needs no Docker daemon -- this is load-bearing and deliberate: tier 1+2 inject a fake compose resolver, so the only places that shell `docker compose config` are `env init`/`env refresh` at runtime (and therefore tier 3). A unit or integration test that invokes the real resolver would silently make the gate require a docker CLI -- treat that as a defect, not a dependency to install on the runner.
 
 ---
 
@@ -280,7 +275,7 @@ on:
 
 ### Job: container
 
-The job logic is *not* inlined into the workflow YAML; it is implemented as a host script (`tests/container/run.sh`) that the workflow invokes. This is deliberate (per [CI5](#ci5-act-rehearsable-where-possible)): the same script runs locally when act cannot rehearse the workflow YAML directly, so CI and local share the entry point.
+The job logic is *not* inlined into the workflow YAML; it is implemented as a host script (`tests/container/run.sh`) that the workflow invokes. This is deliberate (per [CI5](#ci5-local-rehearsable-via-a-host-script)): CI and developers run the same script, so CI and local share one entry point.
 
 The workflow's job is therefore short:
 
@@ -326,10 +321,6 @@ jobs:
         project: [standalone]
 ```
 
-### act Compatibility
-
-`act pull_request -j container --bind` is the rehearsal recipe. It works under native Docker on Linux out of the box. Under Docker Desktop, the rehearsal requires either (a) native dockerd also running, or (b) running the host script directly without act (`bash tests/container/run.sh`). Verified empirically -- see [Appendix D](#appendix-d-act-capability-matrix-verified) and [Recipe: container](#recipe-container).
-
 ---
 
 ## Workflow: release.yml (Roadmap)
@@ -350,12 +341,8 @@ on:
 1. **gate-release** -- re-runs the four-command gate against the release tag's tip on Linux + macOS. Blocks publish on failure.
 2. **container-release** -- re-runs tier 3 against the release tag's tip. Blocks publish on failure.
 3. **build-wheel** -- rebuild the wheel at the release tag's tip (`uv build` on `ubuntu-24.04`) so the published bytes match the tag exactly, producing `dist/admt-X.Y.Z-py3-none-any.whl` and `dist/admt-X.Y.Z.tar.gz`. The build is not release-exclusive -- the gate already builds and artifact-checks the wheel on every run (see [gate.yml](#workflow-gateyml)); only the publish step (below) is release-only.
-4. **publish-pypi** -- `pypa/gh-action-pypi-publish@release/v1` with trusted publishing (no API token in secrets). `needs: [gate-release, container-release, build-wheel]`. Skipped under act (`if: ${{ !env.ACT }}`).
+4. **publish-pypi** -- `pypa/gh-action-pypi-publish@release/v1` with trusted publishing (no API token in secrets). `needs: [gate-release, container-release, build-wheel]`.
 5. **arm64-verification** -- `docker/setup-qemu-action@v4` + `linux/arm64` execution of the wheel against `ghcr.io/lasp/adamant:${ADAMANT_TAG}-arm64`. Echoes `adamant/.github/workflows/test_all_arm64.yml`. Advisory-only for the first published release; required-blocking once the first arm64 admt user emerges.
-
-### act Compatibility
-
-Build-wheel runs under act. publish-pypi is skipped (`!env.ACT`). gate-release and container-release follow the same recipes as gate.yml and container.yml.
 
 ---
 
@@ -383,196 +370,14 @@ on:
 
 The first job uses `:latest` deliberately to detect format-level contract drift. The rest of CI uses pinned tags ([CI6](#ci6-toolchain-pinning)); this workflow's job is to *break* when upstream moves.
 
-### act Compatibility
-
-Cron-only on cloud GHA. `workflow_dispatch` works under act with the same Docker socket recipes as container.yml.
-
----
-
-## act Rehearsal Protocol
-
-`act` is the local-rehearsal contract. Recipes below were validated against this user's environment (active Docker context: `desktop-linux`; native dockerd also running at `/var/run/docker.sock`). The act behaviors named here are inspected from `nektos/act` source plus end-to-end probe runs; see [Appendix D](#appendix-d-act-capability-matrix-verified).
-
-### Why Both Forms?
-
-act behaves differently on each host because *Docker* behaves differently on each host:
-
-- **Native Docker on Linux**: socket at `/var/run/docker.sock`. act binds it transparently. Containers spawned from inside the runner are siblings of the runner (host-daemon namespace).
-- **Docker Desktop on Linux/macOS/Windows**: the daemon runs in a VM. act discovers the socket at `~/.docker/run/docker.sock` or via `docker context inspect`. Docker Desktop refuses to bind-mount its own socket into act-spawned runners unless that path is in its File Sharing config -- which is GUI-only on macOS and not present in the Linux Desktop UI by default.
-
-The recipes below cover both. A developer who runs both Docker Desktop and native Docker side-by-side (as the user of this plan does) can pick the form that matches their daemon-of-the-moment.
-
-### Prerequisites
-
-- `act` 0.2.86+ installed (`pacman -S act` on Manjaro, `brew install act` on macOS, or built from source). Versions before 0.2.86 carry CVEs.
-- A user-level `~/.config/act/actrc` mapping the runner platform:
-
-  ```
-  -P ubuntu-latest=catthehacker/ubuntu:act-latest
-  -P ubuntu-24.04=catthehacker/ubuntu:act-22.04
-  ```
-
-  `catthehacker/ubuntu:act-latest` is the medium-sized image; it covers Python and the build toolchain and ships with `docker` CLI installed (verified). The full image is overkill; the slim image is missing Python.
-- For tier 3 rehearsal: a working Docker daemon. Either native (`/var/run/docker.sock`) or Docker Desktop (any path; recipes below).
-
-Per-invocation flags belong on the command line, not in `actrc`. Earlier hardcoded socket flags in the actrc broke things; the lesson is documented in the user's actrc as a self-warning.
-
-### Recipe: gate
-
-The gate workflow does not need a Docker daemon. The recipe works under both native Docker and Docker Desktop:
-
-```bash
-DOCKER_HOST="$(docker context inspect --format '{{.Endpoints.docker.Host}}')" \
-  act -j gate -W .github/workflows/gate.yml --container-daemon-socket -
-```
-
-- `DOCKER_HOST` exports the active Docker context's endpoint so act itself can pull and start its runner image.
-- `--container-daemon-socket -` (the literal dash) tells act *not* to bind a socket into the runner, sidestepping the Docker Desktop File Sharing wall.
-
-Single-OS rehearsal is sufficient for local validation; the macOS leg of the matrix can only be exercised on actual macOS, and not via act.
-
-Expected wall time: ~3 minutes for a cold `setup-uv` install, ~90 seconds with the uv cache warmed.
-
-### Recipe: container
-
-Tier 3 needs the runner to talk to a Docker daemon. Use the form that matches your daemon-of-the-moment:
-
-**Native Docker on Linux** (preferred for rehearsal stability):
-
-```bash
-DOCKER_HOST="unix:///var/run/docker.sock" \
-  act pull_request -j container -W .github/workflows/container.yml --bind
-```
-
-- `DOCKER_HOST` overrides act's auto-discovery to point at the native socket. Required when the active context is `desktop-linux` but native dockerd is also running.
-- `--bind` (`-b`) bind-mounts the workspace at the same absolute path inside the runner -- *required* so the relative paths in the Adamant `docker-compose.yml` resolve identically on both sides of the runner boundary. Without `--bind`, the workspace is copied into a Docker volume and host paths become unmappable.
-- `pull_request` triggers the right event so the `if: ${{ ... draft == false }}` job-level guard evaluates true.
-
-**Docker Desktop with File Sharing configured** (works only after one-time setup):
-
-1. Open Docker Desktop -> Settings -> Resources -> File Sharing.
-2. Add `~/.docker/desktop/docker.sock`. Apply.
-3. Run:
-
-```bash
-DOCKER_HOST="$(docker context inspect --format '{{.Endpoints.docker.Host}}')" \
-  act pull_request -j container -W .github/workflows/container.yml --bind
-```
-
-This is fragile (Docker Desktop sometimes resets sharing config on upgrade). Prefer the native form when possible.
-
-**Pure Docker Desktop without File Sharing**: act cannot rehearse the workflow yaml. Use the host script instead:
-
-```bash
-bash tests/container/run.sh
-```
-
-This runs the same logic the workflow runs -- pull image, bootstrap fixtures, `pytest -m container` -- but directly on the host's Docker daemon, without act in between. CI invokes the same script (per [CI5](#ci5-act-rehearsable-where-possible)), so this is a first-class entry point, not a fallback.
-
-Expected wall time: realistic figures are higher than the gate. See [Appendix B](#appendix-b-job-reference) and [Risks, Tradeoffs, and Honest Estimates](#risks-tradeoffs-and-honest-estimates) -- the dominant cost on cloud CI is Adamant's first-run `env/activate`, which runs fresh in every fresh runner. Plan for 8-15 minutes per cloud run; locally with image cache and snapshot reuse, 3-5 minutes is achievable.
-
-### Recipe: container against a *live* local Adamant
-
-A common development scenario: the developer is iterating on admt *and* on a local Adamant working tree (often on a feature branch with uncommitted changes). They need to test admt against that live state, not against the fixture's pinned ref. The `ADMT_LOCAL_ADAMANT` env var enables this; under act, it requires one extra flag.
-
-Because act's `--bind` only mounts the admt workspace, paths outside it are not visible inside the runner by default. To expose the live Adamant tree at the same absolute path on both sides, pass it explicitly via `--container-options`:
-
-```bash
-ADMT_LOCAL_ADAMANT=/path/to/your/adamant \
-DOCKER_HOST="unix:///var/run/docker.sock" \
-  act pull_request -j container -W .github/workflows/container.yml --bind \
-  --container-options "-v $ADMT_LOCAL_ADAMANT:$ADMT_LOCAL_ADAMANT"
-```
-
-What happens inside:
-
-1. `tests/container/run.sh` sees `ADMT_LOCAL_ADAMANT` set and creates a symlink `tests/container/_workspace/adamant -> $ADMT_LOCAL_ADAMANT` instead of cloning.
-2. The symlink lives in the bind-mounted admt workspace, so it appears at the same path on host and runner.
-3. The bind-mount from `--container-options` makes the symlink target also valid on both sides.
-4. `admt env init` resolves the symlink and derives the *live* compose configuration via `docker compose config` (loading any colocated `.env`), registering volume mounts that point at the live host path.
-5. `admt env start` tells the host Docker daemon to bind the live path into the Adamant container -- the daemon resolves the path on the host, where it really exists.
-6. Tests exercise admt against the developer's actual in-progress Adamant changes.
-
-**Caveats:**
-
-- The mount is read-write, not read-only -- a real Adamant build mutates `build/` directories under the source tree. The developer's live working tree will accumulate `build/` artifacts during the test run. This is intentional (matches what would happen if they ran `redo` directly), but the developer should `git status` before and after to avoid surprises.
-- Permissions matter. The runner image's default user (`ubuntu` at UID 1001 in `catthehacker/ubuntu:act-latest`) may not match the host's UID. If the live Adamant tree is not world-readable and writable, append `--user $(id -u):$(id -g)` to `--container-options` so the runner inherits the host UID.
-- The pin audit ([Version-Pin Parity Audit](#version-pin-parity-audit)) is unaffected: it checks `_pins.env` against consumer files, not against the actual fixture contents. Live mode does not violate any pin.
-
-For day-to-day "I'm changing admt and want to verify against my live Adamant" iteration, the simpler form is to skip act entirely:
-
-```bash
-ADMT_LOCAL_ADAMANT=/path/to/your/adamant bash tests/container/run.sh
-```
-
-This is what `tests/container/run.sh` is for ([CI5](#ci5-act-rehearsable-where-possible)) -- it always works, it doesn't need act flags, and it shares the same entry point CI uses. The act form above is for verifying the *workflow YAML itself* still drives the right behavior under live-Adamant conditions.
-
-### Recipe: container against the *latest* upstream Adamant (`adamant:main`)
-
-The complement of the live-local mode: pin-overriding to test admt against current upstream `main` without bumping `_pins.env`. No special act flags -- the ref is overridden via env var:
-
-```bash
-ADAMANT_REF=main \
-DOCKER_HOST="unix:///var/run/docker.sock" \
-  act pull_request -j container -W .github/workflows/container.yml --bind
-```
-
-`tests/container/run.sh` honors `ADAMANT_REF` over the `_pins.env` value. The clone is fresh inside the workspace, isolated from the developer's other working trees. This is the recommended way to spot-check whether an admt change works against current upstream Adamant before bumping the pin.
-
-The two override modes (`ADMT_LOCAL_ADAMANT` and `ADAMANT_REF`) are mutually exclusive: if both are set, `ADMT_LOCAL_ADAMANT` wins (the symlink path is taken before the clone path is considered). Document both in `tests/CI.md` so the runbook tells developers which mode answers which question.
-
-### Recipe: list, validate, dryrun
-
-Pre-flight commands that work the same way regardless of socket recipe:
-
-```bash
-act -l                                         # list all jobs
-act --validate -W .github/workflows/gate.yml   # strict schema check
-act -n -j gate                                 # dryrun -- validate the execution plan
-```
-
-These do not require a Docker socket bind and so work uniformly under any Docker host.
-
-### What act Cannot Rehearse
-
-Documented limits (none of these are bugs in act -- they are first-principles limits of local rehearsal):
-
-- **The macOS leg of the matrix.** act runs Linux containers; macOS jobs are skipped.
-- **PyPI publishing** (release.yml). Trusted publishing requires GitHub's OIDC token, which act cannot mint. The job is gated by `if: ${{ !env.ACT }}`.
-- **Cross-architecture verification** (release.yml's arm64-verification). `docker/setup-qemu-action@v4` is theoretically possible under act but extremely slow; documented as cloud-only.
-- **`secrets.GITHUB_TOKEN`-bound steps** that talk to the GitHub API (e.g., upstream.yml's issue creation). act sets a placeholder token; the API calls fail. Use `--secret GITHUB_TOKEN=<a real PAT>` if you need to test locally; otherwise the step is gated on `!env.ACT`.
-- **`actions/cache@v5`** writes are no-ops under act (act has its own cache server but doesn't persist across `act` invocations the way GitHub's does). Reads succeed but always miss; warm-cache rehearsal is not meaningful locally.
-
-When a developer adds a step that won't run under act, they add a one-line `# act: skip <reason>` or `# act: ok` comment so future readers know whether the skip is by design.
-
-### Alternative act Methods (Tradeoff Space)
-
-The recipes above use `--bind` + automatic socket discovery. That is one point on a tradeoff curve, not the only method. When the default recipe doesn't fit, these alternatives are worth investigating:
-
-- **`--privileged` + DinD runner image** (e.g., `catthehacker/ubuntu:full-latest`). Runs a nested Docker daemon inside the act runner; containers spawned by the workflow are isolated from the host's docker namespace. Heavier setup, more isolation, no host-socket-binding required. Whether the workspace path resolution still works (the bind mount is host-runner; the nested dockerd's mount source is the runner's filesystem) needs empirical verification before committing.
-
-- **`--reuse` (`-r`)**. Keeps the runner container alive across `act` invocations. Preserves `/tmp/admt/<project>/` snapshot between runs, eliminating the cold-activate cost on subsequent local iterations. Significant local-iteration win when iterating on a single command's behavior; the next-run startup drops from minutes to seconds.
-
-- **Pre-built runner image with admt + Adamant baked in.** A custom image extending `catthehacker/ubuntu:act-latest` with admt installed and an Adamant clone (and possibly a pre-activated env snapshot) baked in. Eliminates the pull and activate cost entirely. Maintenance burden in exchange for runtime; appropriate once the team is iterating on tier 3 frequently.
-
-- **`catthehacker/ubuntu:full-latest`** vs `act-latest` vs `latest`. Size/feature tradeoff. `act-latest` (medium, default) covers Python and basic build tools. `full-latest` adds language runtimes admt doesn't need but ships the docker CLI plus more dev tools. `latest` is the slim image; missing Python, breaks the gate immediately.
-
-- **`--artifact-server-path`**. Captures the artifacts each upload-artifact step writes during local rehearsal. Without this flag, the upload-artifact step fails with `Unable to get the ACTIONS_RUNTIME_TOKEN env variable`. Recipe: `act -j gate --artifact-server-path /tmp/act-artifacts -W .github/workflows/gate.yml`. After the run, `/tmp/act-artifacts/<run-id>/<artifact-name>/` contains the same artifact zip the cloud upload would produce.
-
-- **`~/.actrc` merge order**. act reads three actrc files and merges them: XDG (`~/.config/act/actrc`) -> `~/.actrc` -> `./.actrc`. A `--container-daemon-socket` line in any of the three silently overrides per-invocation defaults. When debugging a "why does my command-line flag not take effect" mystery, audit all three locations.
-
-- **`--container-options`** for arbitrary docker-create flags. Already used in [Recipe: container against a *live* local Adamant](#recipe-container-against-a-live-local-adamant) for the volume-mount form. Also accepts `--user $(id -u):$(id -g)` for runner-UID parity, `--tmpfs /tmp` for ephemeral test scratch space, and other docker-run flags as needed.
-
-The first PR sticks with the documented `--bind` recipe. Implementation (or a follow-up) explores these alternatives empirically and updates this section with the verified tradeoffs.
-
 ---
 
 ## Tier 3 Fixture Strategy
 
 Tier 3 needs a real Adamant project to exercise admt against. Two constraints shape the fixture:
 
-1. **act's `--bind` only mounts the workspace root at the same path in the runner.** Sibling directories outside the workspace are invisible from inside the runner (verified empirically). Therefore the Adamant fixture must live *inside* the admt working tree.
-2. **The Adamant `docker-compose.yml` uses relative paths** (e.g., `source: ../../adamant`). For docker-compose to find the right host paths whether running locally, on cloud GHA, or via act, the fixture layout must match the relative-path convention.
+1. **The runner bind-mounts the workspace at a stable path; directories outside it are not reliably visible.** On cloud GHA the checkout *is* the workspace. So the Adamant fixture must live *inside* the admt working tree (`tests/container/_workspace/adamant/`).
+2. **The Adamant `docker-compose.yml` uses relative paths** (e.g., `source: ../../adamant`). For docker-compose to resolve the right host paths whether running on cloud GHA or locally via `tests/container/run.sh`, the fixture layout must match the relative-path convention.
 
 ### Fixture Layout
 
@@ -665,7 +470,6 @@ In live mode, the test suite mutates the symlinked Adamant tree (build artifacts
 
 - The developer should `git status` their Adamant tree before and after to confirm nothing unwanted got written.
 - A test that explicitly *removes* something (e.g., `admt clean -a`) will erase build artifacts in the developer's live tree -- that is, it does what `admt clean -a` is supposed to do. Tests that call cleanup commands are scoped to fresh pinned-mode runs by default; the conftest fixture warns and skips them under `ADMT_LOCAL_ADAMANT` unless `ADMT_ALLOW_LIVE_MUTATION=1` is set.
-- Permissions matter when running under act with a runner UID that differs from the host UID. See [Recipe: container against a *live* local Adamant](#recipe-container-against-a-live-local-adamant) for the `--user $(id -u):$(id -g)` flag.
 
 #### Pin-Override-Mode Caveats
 
@@ -677,7 +481,7 @@ Pin-override mode (e.g., `ADAMANT_REF=main`) clones a *different* Adamant source
 
 - Point admt at a scratch config home for the whole session (a temp `HOME`), so the suite's registrations and per-terminal session state never touch the developer's real `~/.admt` during local rehearsal -- `config.yml` and `sessions.yml` are both live state now, and polluting them from a test run is not acceptable.
 - Locate the Adamant clone (see [Project Resolution Order](#project-resolution-order) below for the four-mode lookup).
-- Register the project: `subprocess.run(["admt", "env", "init", <path>])`. Registration shells `docker compose config`, so the docker CLI must be present -- a given on the tier-3 runner, and verified for the act runner image (see [Appendix D](#appendix-d-act-capability-matrix-verified)).
+- Register the project: `subprocess.run(["admt", "env", "init", <path>])`. Registration shells `docker compose config`, so the docker CLI must be present -- a given on the tier-3 runner.
 - Start the container: `admt env start`.
 - Yield component-scoped fixtures (see [Component Coverage Requirements](#component-coverage-requirements) below).
 - Teardown: `admt env stop`; the scratch config home is discarded with the session.
@@ -1101,15 +905,13 @@ Each workflow's pytest step writes JUnit XML; a follow-up step posts that XML as
 
 ```yaml
 - name: Surface per-test results in PR check view
-  if: ${{ always() && !env.ACT }}
+  if: ${{ always() }}
   uses: mikepenz/action-junit-report@<sha>  # v4.x.x
   with:
     report_paths: gate-junit.xml
     detailed_summary: true
     check_name: "gate (per-test)"
 ```
-
-The `!env.ACT` guard skips the API call during local act rehearsal -- act sets `ACT=true` and the API call would either 403 or write a check-run to the wrong place.
 
 ### Themed Coverage HTML
 
@@ -1218,7 +1020,7 @@ This refinement lives in TEST_PLAN.md §Test Tiers §Tier 2 as the long-term hom
 ### Spec/CI Alignment Guards
 
 - **The gate-command strings in `gate.yml` match `TEST_PLAN.md` byte-for-byte** (modulo the `--junitxml=...` and `-m "not container"` extensions documented in [CI1](#ci1-same-gate-from-a-clean-machine)).
-- **`container.yml` invokes `tests/container/run.sh`** -- so the act-incompatible fallback path stays available.
+- **`container.yml` invokes `tests/container/run.sh`** -- so CI and local rehearsal share one entry point.
 - **Every `Command` subclass listed in [Appendix C](#appendix-c-command-inventory) appears at least once in `tests/container/`** (the structural arm of the [self-audit](#architectural-self-audit)).
 - **Every alias defined via `add_alias` in `cli.py` appears at least once in `tests/integration/` and once in `tests/container/`.**
 
@@ -1496,12 +1298,12 @@ The first CI PR ships gate.yml plus the alignment tests and the self-audit. Tier
 - `tests/unit/test_ci_alignment.py` -- the spec/CI sync tests.
 - `tests/unit/test_pin_audit.py` -- the version-pin parity audit. The initial `PINS` manifest covers `uv`, `python`, and the third-party-action SHA convention; the Adamant pair (`ADAMANT_TAG`/`ADAMANT_REF`) joins the manifest when `_pins.env` lands alongside the container workflow.
 - `tests/unit/test_command_test_coverage.py` -- the structural self-audit (parametrized over commands/services/adapters/aliases plus the global, subcommand, and env-var flag families). The tier-3 arm of every audit family is conditional: it skips when `tests/container/` is empty, so the gate workflow can land before tier-3 tests exist. The tier-2 arm runs unconditionally -- existing `tests/integration/` tests already exercise most flags, and the audit makes the coverage explicit.
-- One CLAUDE.md update: a `## CI` section pointing to this plan and to `act -j gate`.
+- One CLAUDE.md update: a `## CI` section pointing to this plan and to the local gate commands.
 - README badge for gate status.
 
 The PR does *not* touch ARCHITECTURE.md, CODING_RULES.md, or TEST_PLAN.md, except where this plan amends them. Per [CODING_RULES.md §Agent-Specific Rules](CODING_RULES.md#agent-specific-rules), the spec doesn't get edited to match what the workflow happens to do -- the workflow gets edited to match the spec.
 
-The PR's quality gate acceptance includes one extra rehearsal: `act -j gate -W .github/workflows/gate.yml --container-daemon-socket -` succeeds locally before pushing.
+The PR's acceptance is the four-command gate green locally before pushing -- gate.yml's steps are exactly those commands.
 
 ### PR 2: container.yml + tier-3 tests + activate full self-audit
 
@@ -1521,14 +1323,13 @@ The PR's quality gate acceptance includes one extra rehearsal: `act -j gate -W .
   - `test_global_flags.py` -- `--verbose`, `--quiet`, `--debug`, `--yes`, `--force`, `ADMT_NONINTERACTIVE`, `ADMT_NONINTERACTIVE=0`, `ADMT_ENV`, `NO_COLOR`.
   - `test_aliases.py` -- one minimal invocation per alias (`e`, `b`, `t`, `s`, `an`, `cl`, `p`, `cov`, `pub`, `w`, `tmpl`).
   - `test_signal_handling.py` -- SIGINT propagation, exit code 130 ([ARCHITECTURE.md §Signal Handling](ARCHITECTURE.md#signal-handling)).
-- `tests/CI.md` -- the act recipes split out from this plan into a runbook (since they are operator instructions rather than spec).
+- `tests/CI.md` -- an operator runbook for running tier 3 locally via `tests/container/run.sh` (operator instructions rather than spec).
 - README badge for container status.
 - The previously-conditional tier-3 arm of the self-audit is enabled (no longer skipping; if a command is missing tier-3 coverage, the gate fails).
 
 The PR's quality gate acceptance includes:
 
-- `bash tests/container/run.sh` succeeds locally (the act-independent host-script form).
-- `act pull_request -j container -W .github/workflows/container.yml --bind` succeeds locally with `DOCKER_HOST=unix:///var/run/docker.sock` (the native-Docker rehearsal form).
+- `bash tests/container/run.sh` succeeds locally against a real Adamant container.
 
 ### PR 3 (roadmap): release.yml
 
@@ -1562,12 +1363,11 @@ The workflows are code; they have their own acceptance criteria.
 
 Every workflow change goes through this checklist before merge:
 
-1. **`act --validate -W .github/workflows/<file>.yml`** -- strict schema check.
-2. **`act -n -j <job> -W .github/workflows/<file>.yml`** -- dryrun confirms the execution plan is what's intended.
-3. **`act -j <job> ...`** with the appropriate Docker-socket recipe -- end-to-end local run. Required for gate.yml. Required for container.yml when act can rehearse it; the host-script equivalent (`bash tests/container/run.sh`) is required regardless.
-4. **The drift-prevention tests in `tests/unit/test_ci_alignment.py`** still pass.
-5. **The self-audit in `tests/unit/test_command_test_coverage.py`** still passes.
-6. **The PR description includes the local act output** of step 3 (a short paste, not the full log) -- so the reviewer sees the rehearsal happened.
+1. **A YAML parse/lint of the workflow file** passes (catches syntax errors before push).
+2. **`bash tests/container/run.sh` succeeds locally** against a real Adamant container (for container.yml; gate.yml's acceptance is its four gate commands green locally).
+3. **The drift-prevention tests in `tests/unit/test_ci_alignment.py`** still pass.
+4. **The self-audit in `tests/unit/test_command_test_coverage.py`** still passes.
+5. **The PR description includes the local run output** of step 2 (a short paste, not the full log) -- so the reviewer sees the rehearsal happened.
 
 ### Per-Job Acceptance
 
@@ -1576,7 +1376,6 @@ Each new job:
 1. Has a `name:` that maps to the spec section that motivates it.
 2. Has a comment naming which CI<n> requirement it implements.
 3. Carries a `timeout-minutes:` at least 2x the median wall time observed during rehearsal.
-4. Is annotated `# act: ok` or `# act: skip <reason>` so the act-rehearsability boundary is locally legible.
 
 ---
 
@@ -1625,7 +1424,6 @@ Several items read as "good engineering" but whose value scales with codebase si
 A few claims in this plan rest on upstream behavior I have not empirically confirmed:
 
 - **Adamant container ships OCI labels** (specifically `org.opencontainers.image.revision`). The pin-parity-remote job in upstream.yml depends on this. If the Adamant image is built without those labels, the job fails for the wrong reason ("label missing" rather than "ref mismatch"). Verify with `docker inspect ghcr.io/lasp/adamant:${ADAMANT_TAG}` *before* writing the upstream workflow. If labels are absent, the remote check needs a different mechanism (e.g., maintain a manual map of `_pins.env` values to upstream release notes).
-- **`catthehacker/ubuntu:act-latest` ships `docker` CLI 29.x.** Confirmed in this plan's act capability matrix probe (29.4.1-1 was observed). If a future image bump removes or downgrades the docker CLI, the act recipes break silently -- and not just for daemon-facing tests: `admt env init`/`env refresh` themselves shell `docker compose config`, so registration inside the runner requires the docker CLI even before any container starts. The pin audit should grow a "platform image version" entry once it stabilizes.
 - **`actions/cache@v5` semantics for the activate snapshot are strong enough.** The proposed cache key includes `hash(env/activate, requirements.txt, _pins.env)`. If Adamant's activate has untracked dependencies (e.g., a `setup.sh` it `source`s), the hash misses them and stale snapshots restore. Verify by reading the upstream activate script before relying on the cache.
 
 ### Where the plan is conservative
@@ -1711,18 +1509,18 @@ The initial CI surface is deliberately small: gate.yml + container.yml + alignme
 
 These are *order-of-magnitude* estimates, not commitments. Wall times are dominated by uncached external work (`uv sync`, image pull, Adamant `env/activate`). See [Risks, Tradeoffs, and Honest Estimates](#risks-tradeoffs-and-honest-estimates) for the assumptions baked into each row.
 
-| Job | Workflow | OS | Wall Time (steady) | Wall Time (cold) | act-Rehearsable |
-|---|---|---|---|---|---|
-| `gate (ubuntu-24.04)` | gate.yml | linux | ~90s -- 2m | ~3m | yes |
-| `gate (macos-14)` | gate.yml | macos | ~2m -- 3m | ~4m | no (linux-only act) |
-| `container (standalone)` | container.yml | linux | **~8m -- 12m** | **~12m -- 18m** | yes (native-socket recipe) or via `tests/container/run.sh` directly |
-| `gate-release (ubuntu-24.04)` | release.yml | linux | ~90s -- 2m | ~3m | yes |
-| `gate-release (macos-14)` | release.yml | macos | ~2m -- 3m | ~4m | no |
-| `container-release` | release.yml | linux | ~8m -- 12m | ~12m -- 18m | yes (same recipe as container.yml) |
-| `build-wheel` | release.yml | linux | ~30s | ~1m | yes |
-| `publish-pypi` | release.yml | linux | ~10s | ~30s | no (OIDC trust) |
-| `arm64-verification` | release.yml | linux+QEMU | ~15m -- 25m | ~25m -- 35m | no (slow under act) |
-| `upstream-tier3` | upstream.yml | linux | ~8m -- 12m | ~12m -- 18m | yes (same recipe as container.yml) |
+| Job | Workflow | OS | Wall Time (steady) | Wall Time (cold) |
+|---|---|---|---|---|
+| `gate (ubuntu-24.04)` | gate.yml | linux | ~90s -- 2m | ~3m |
+| `gate (macos-14)` | gate.yml | macos | ~2m -- 3m | ~4m |
+| `container (standalone)` | container.yml | linux | **~8m -- 12m** | **~12m -- 18m** |
+| `gate-release (ubuntu-24.04)` | release.yml | linux | ~90s -- 2m | ~3m |
+| `gate-release (macos-14)` | release.yml | macos | ~2m -- 3m | ~4m |
+| `container-release` | release.yml | linux | ~8m -- 12m | ~12m -- 18m |
+| `build-wheel` | release.yml | linux | ~30s | ~1m |
+| `publish-pypi` | release.yml | linux | ~10s | ~30s |
+| `arm64-verification` | release.yml | linux+QEMU | ~15m -- 25m | ~25m -- 35m |
+| `upstream-tier3` | upstream.yml | linux | ~8m -- 12m | ~12m -- 18m |
 
 "Cold" = first run with no cache (no uv cache, no Adamant image cache). "Steady" = a typical PR after caches are warm. **The container-touching jobs are slow.** Cloud GHA runners are fresh per job, so Adamant's `env/activate` (which can take 5-10 minutes for first-run alr/gprbuild work) re-runs every time -- caching the activate snapshot across runs is a medium-term optimization (see [Roadmap](#medium-term)). Plan branch protections and review SLAs around the upper end of these ranges, not the lower.
 
@@ -1791,34 +1589,10 @@ The self-audit parametrizes over both tables and asserts each entry has at least
 
 ---
 
-## Appendix D: act Capability Matrix (Verified)
-
-The recipes in [act Rehearsal Protocol](#act-rehearsal-protocol) were validated empirically against `act 0.2.84` on `Manjaro Linux` (the 0.2.86 floor in [Prerequisites](#prerequisites) is a CVE floor, not a behavioral one; the probed capabilities are unchanged) with both `desktop-linux` (active) and native (`/var/run/docker.sock`) Docker contexts available. Each row was probed with a small workflow that exercised the relevant capability.
-
-| Capability | Native Docker | Docker Desktop (no File Sharing config) | Docker Desktop (with File Sharing) |
-|---|---|---|---|
-| Run a workflow that needs no Docker daemon | works (default socket bind silently unused) | works with `--container-daemon-socket -` | works |
-| Bind workspace at same absolute path on host and runner | works with `--bind` | works with `--bind` | works with `--bind` |
-| See sibling directories outside workspace from the runner | **does not work** -- only the workspace is bound | **does not work** | **does not work** |
-| Run `docker run`/`docker compose` from inside the runner | works with default socket bind | **fails**: "mounts denied: socket path not shared" | works |
-| Use act-default socket discovery | works | discovers Desktop socket but mount fails | works |
-
-**Operational consequence**: the tier-3 fixture must clone Adamant *into* the workspace (`tests/container/_workspace/adamant/`), because the workspace is the only thing visible inside the runner. This shaped [Tier 3 Fixture Strategy](#tier-3-fixture-strategy).
-
-The Docker-Desktop-without-File-Sharing failure is a hard wall in this environment; the fallback is the host script `tests/container/run.sh`, which CI invokes directly. This is why [CI5](#ci5-act-rehearsable-where-possible) requires the workflow logic to be exposed as a script -- so the act-incompatible case still has a first-class entry point.
-
-The findings here will eventually move into `tests/CI.md` as operator runbook content; this appendix carries the design rationale for why the recipes look the way they do.
-
----
-
-## Appendix E: Glossary
+## Appendix D: Glossary
 
 - **Gate** -- the four-command quality gate from [TEST_PLAN.md §Quality Gate](TEST_PLAN.md#quality-gate). The non-negotiable bar that every change clears.
 - **Tier 1 / Tier 2 / Tier 3** -- the three test tiers from [TEST_PLAN.md §Test Tiers](TEST_PLAN.md#test-tiers). Tier 1 is unit, tier 2 is integration via CliRunner + subprocess, tier 3 is container ground-truth.
-- **act** -- [nektos/act](https://github.com/nektos/act), the local GitHub Actions runner. Reads `.github/workflows/`, builds an execution plan, runs each job in a Docker container that approximates the GitHub-hosted runner.
-- **Native Docker** -- the system Docker daemon on Linux (socket at `/var/run/docker.sock`).
-- **Docker Desktop** -- Docker Inc.'s VM-backed daemon (socket typically at `~/.docker/desktop/docker.sock` on Linux, `~/.docker/run/docker.sock` on macOS).
-- **`--bind`** -- act flag that bind-mounts the workspace at the same absolute path on host and runner. Required for tier 3 because path-mapping in admt depends on host and runner agreeing on absolute paths.
 - **Drift** -- the spec saying one thing and the code (or workflow) doing another. Three categories: spec-vs-impl, spec-vs-fact, spec-vs-CI. CI9 (drift-prevention guards) targets the third.
 - **Self-audit** -- a parametrized test that walks `Command`/`Service`/`Adapter` modules and asserts each has a test at the right tier. The structural arm of the more general "is this code tested" question; complements the 100% line + branch coverage gate.
 - **Provenance** -- the metadata that answers "exactly what did this run test?" (commit SHA, run ID, branch/PR, OS, timestamp, pins, image digest). Captured in the container job's `versions.txt` and in the workflow run's own metadata.
