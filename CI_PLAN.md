@@ -1138,7 +1138,7 @@ The initial CI surface is deliberately small: gate.yml + container.yml + alignme
 - **Container-test parallelization** -- shard tier 3 by file across 2-3 jobs once it has 50+ tests.
 - **Self-hosted GHCR mirror** for the Adamant image so cold tier-3 runs are sub-30s on the pull side.
 - **Whole-file-size trip-wire**.
-- **Per-tier scenario audit** -- the more aggressive variant of the self-audit.
+- **Per-tier scenario audit** -- a per-(command, scenario) coverage audit, beyond the deferred per-command self-audit.
 - **Mutation testing** via `mutmut` on a schedule against `main`, not blocking PRs.
 - **Step-output bridge for the Gate dashboard panel** -- a workflow step that writes ruff/mypy results to JSON the renderer reads, so the four gate commands appear with per-command granularity in the dashboard. Currently they live in GitHub's native step view.
 
@@ -1253,5 +1253,5 @@ The tier-3 suite covers both tables -- one minimal test invocation per command a
 - **Gate** -- the four-command quality gate from [TEST_PLAN.md §Quality Gate](TEST_PLAN.md#quality-gate). The non-negotiable bar that every change clears.
 - **Tier 1 / Tier 2 / Tier 3** -- the three test tiers from [TEST_PLAN.md §Test Tiers](TEST_PLAN.md#test-tiers). Tier 1 is unit, tier 2 is integration via CliRunner + subprocess, tier 3 is container ground-truth.
 - **Drift** -- the spec saying one thing and the code (or workflow) doing another. Three categories: spec-vs-impl, spec-vs-fact, spec-vs-CI. CI9 (drift-prevention guards) targets the third.
-- **Self-audit** -- a parametrized test that walks `Command`/`Service`/`Adapter` modules and asserts each has a test at the right tier. The structural arm of the more general "is this code tested" question; complements the 100% line + branch coverage gate.
+- **Self-audit** -- the deferred per-command-right-tier audit (`test_command_test_coverage.py`): it would assert each command/alias/flag has a test at the right tier. Deferred because the 100% coverage gate plus `test_architecture.py` already answer "is each command tested" (see [Architectural Self-Audit](#architectural-self-audit)).
 - **Provenance** -- the metadata that answers "exactly what did this run test?" (commit SHA, run ID, branch/PR, OS, timestamp, pins, image digest). Captured in the container job's `versions.txt` and in the workflow run's own metadata.
