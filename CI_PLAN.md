@@ -29,8 +29,6 @@ This plan is the spec for admt's CI -- the workflow files under `.github/workflo
 - [Roadmap](#roadmap)
 - [Appendix A: Trigger and Permission Matrix](#appendix-a-trigger-and-permission-matrix)
 - [Appendix B: Job Reference](#appendix-b-job-reference)
-- [Appendix C: Command Inventory](#appendix-c-command-inventory)
-- [Appendix D: Glossary](#appendix-d-glossary)
 
 ---
 
@@ -66,8 +64,6 @@ This list is also the test plan for whether CI is doing its job. If a future dri
 - **PyPI publishing on release** -- `uv publish` + attestations. The wheel itself is already built and artifact-checked on every run (see In Scope above); release only *publishes* the built artifact.
 - **ARM64 verification on release** -- echo the Adamant ecosystem pattern (`test_all_arm64.yml`).
 - **Upstream contract tests** -- a weekly schedule that re-runs tier 3 against the latest `ghcr.io/lasp/adamant:*` image so we notice when an Adamant change breaks our integration.
-- **Status badges** in `README.md` (gate, container, release, upstream).
-- **Codecov** or equivalent coverage trend dashboard.
 - **Plugin-author CI template** -- the gate definition packaged for plugin authors to reuse.
 
 ### Non-Goals
@@ -584,7 +580,7 @@ Once `admt create project` ([ROADMAP.md](ROADMAP.md) Tier 4) lands, the bootstra
 
 ### Per-Command Coverage
 
-The 24 concrete commands (see [Appendix C](#appendix-c-command-inventory)) split into two categories:
+The 24 concrete commands (see [ARCHITECTURE.md §Command Reference](ARCHITECTURE.md#command-reference)) split into two categories:
 
 - **3 pure-host commands** (`env init`, `env use`, `env list`) -- no *running* container required. `env init` *creates* the project and shells `docker compose config` to derive its resolved metadata (docker CLI required; daemon not). `env use` writes the active selection -- this terminal's session entry plus the global default for new terminals. `env list` reads config and, when a controlling terminal exists, pins the resolution its `*` reports. Tier 3 coverage: a single happy-path test that the binary works against `tests/container/_workspace/adamant/`, plus [Worktree Configuration Coverage](#worktree-configuration-coverage).
 - **21 project + container commands** -- everything else. Tier 3 coverage: each gets one happy-path test plus the full failure-path matrix where applicable to the command.
@@ -608,7 +604,7 @@ A per-command-*right-tier* audit (asserting each command/alias/flag has a test a
 Every CI run produces two surfaces, each carrying one signal:
 
 - **In-PR check view** (auto-rendered by GitHub from JUnit) -- per-test pass/fail, scannable on the PR's "Checks" tab without leaving the browser. Powered by [`mikepenz/action-junit-report@v4`](https://github.com/mikepenz/action-junit-report). One step in each workflow, one POSTed check-run per job.
-- **Downloadable artifact bundle** (uploaded by `actions/upload-artifact@v4`) -- forensic detail when a failure needs more than the check view: themed coverage HTML (per-file line + branch drilldown), raw JUnit XML, raw coverage XML (Cobertura, for codecov-style consumers), and tier-3-only diagnostics (`docker compose logs`, version stamps).
+- **Downloadable artifact bundle** (uploaded by `actions/upload-artifact@v4`) -- forensic detail when a failure needs more than the check view: themed coverage HTML (per-file line + branch drilldown), raw JUnit XML, raw coverage XML (Cobertura format), and tier-3-only diagnostics (`docker compose logs`, version stamps).
 
 Test results surface as PASS/FAIL in the JUnit-rendered check view. A reviewer who wants more than "PASS" clicks the test name in the check view and gets the assertion message verbatim from JUnit -- which already names the disagreeing file or missing test for parametrized failures. The custom dashboard renderer is intentionally absent; coverage HTML is the only piece worth owning the rendering of, and the `--extra-css` hook does that without owning anything else.
 
@@ -618,7 +614,7 @@ Test results surface as PASS/FAIL in the JUnit-rendered check view. A reviewer w
 _artifacts/
   gate/
     gate-junit.xml        # tier 1 + tier 2 (all of pytest, including the audits)
-    coverage.xml          # Cobertura, for codecov-style consumers
+    coverage.xml          # Cobertura format
     htmlcov/              # coverage.py's HTML report, themed via --extra-css
       index.html
       ...
@@ -748,7 +744,7 @@ The implementation PR (the placeholder PR #19) brings **Tier 1+2 into CI** -- th
 1. **`gate.yml` -- Tier 1+2 in CI (the implementation).** The four-command gate from [TEST_PLAN.md §Quality Gate](TEST_PLAN.md#quality-gate), on a clean machine, on every push and PR -- the same bar developers already run locally.
    - `.github/workflows/gate.yml` (Linux + macOS matrix), `.uv-version`, `.gitignore` additions (`gate-junit.xml`, `coverage.xml`, `_artifacts/`), `tests/ci_assets/admt-dark.css`.
    - `uv build` builds the wheel and uploads it as an artifact every run, so packaging/entry-point breakage surfaces here (see [In Scope](#scope-and-non-goals)).
-   - A CLAUDE.md `## CI` section pointing to this plan and the local gate commands; README gate badge.
+   - A CLAUDE.md `## CI` section pointing to this plan and the local gate commands.
    - *Green when:* the four-command gate passes on the matrix.
 2. **Tier 3 -- deferred to a separate planned PR (spec below left as-is for re-review).** The local container suite and its CI workflow are not in the implementation PR; the specification is preserved unmodified ([Tier 3 Fixture Strategy](#tier-3-fixture-strategy), [Per-Command Coverage Matrix](#per-command-coverage-matrix), [Workflow: container.yml](#workflow-containeryml)) and covers:
    - `tests/container/_pins.env` -- the Adamant tag/ref pair (see [Paired Pins](#paired-pins-and-_pinsenv)).
@@ -822,15 +818,13 @@ A few claims rest on upstream behavior not yet confirmed; verify before shipping
 
 ## Roadmap
 
-The initial CI surface is deliberately small: gate.yml + container.yml + alignment. Everything below is real and useful, but it builds on that surface and should not delay it from landing.
+The initial CI surface is deliberately small: the four-command gate (`gate.yml`). Everything below is real and useful, but it builds on that surface and should not delay it from landing.
 
 ### Near-term (within a release or two of the initial CI surface shipping)
 
 - **release.yml** -- PyPI publishing.
 - **upstream.yml** -- weekly contract test against `:latest`.
 - **arm64-verification job** in release.yml.
-- **Codecov integration**.
-- **Status badges** in README.
 
 ### Medium-term
 
@@ -838,17 +832,12 @@ The initial CI surface is deliberately small: gate.yml + container.yml + alignme
 - **Reusable workflow** for the gate command sequence.
 - **Container-test parallelization** -- shard tier 3 by file across 2-3 jobs once it has 50+ tests.
 - **Self-hosted GHCR mirror** for the Adamant image so cold tier-3 runs are sub-30s on the pull side.
-- **Whole-file-size trip-wire**.
-- **Per-tier scenario audit** -- a per-(command, scenario) coverage audit, beyond the deferred per-command self-audit.
-- **Mutation testing** via `mutmut` on a schedule against `main`, not blocking PRs.
-- **Step-output bridge for the Gate dashboard panel** -- a workflow step that writes ruff/mypy results to JSON the renderer reads, so the four gate commands appear with per-command granularity in the dashboard. Currently they live in GitHub's native step view.
 
 ### Long-term
 
 - **Windows CI** when the spec adds Windows as a target platform.
 - **Plugin-author CI template** -- a reusable `gate.yml` workflow plus the tier-3 fixture pattern, for plugins that register `Command` subclasses via entry points ([ARCHITECTURE.md §Plugin System](ARCHITECTURE.md#plugin-system-roadmap)).
 - **Schema-based contract tests** for tier 3 once `admt validate` lands.
-- **Self-hosted runner pool** if cloud-runner minutes become a bottleneck.
 
 ---
 
@@ -883,76 +872,3 @@ These are *order-of-magnitude* estimates, not commitments. Wall times are domina
 | `upstream-tier3` | upstream.yml | linux | ~8m -- 12m | ~12m -- 18m |
 
 "Cold" = first run with no cache (no uv cache, no Adamant image cache). "Steady" = a typical PR after caches are warm. **The container-touching jobs are slow.** Cloud GHA runners are fresh per job, so Adamant's `env/activate` (which can take 5-10 minutes for first-run alr/gprbuild work) re-runs every time -- caching the activate snapshot across runs is a medium-term optimization (see [Roadmap](#medium-term)). Plan branch protections and review SLAs around the upper end of these ranges, not the lower.
-
----
-
-## Appendix C: Command Inventory
-
-24 concrete `Command` subclasses on `main`, mirroring [ARCHITECTURE.md §Command Reference](ARCHITECTURE.md#command-reference). Three categories:
-
-### Pure host (no project, no container)
-
-| `name` | Class | Notes |
-|---|---|---|
-| `env init` | `EnvInitCommand` | Creates a project; doesn't depend on one |
-| `env use` | `EnvUseCommand` | Switches active project; reads config |
-| `env list` | `EnvListCommand` | Reads config |
-
-### Container-touching env subcommands
-
-| `name` | Class |
-|---|---|
-| `env start` | `EnvStartCommand` |
-| `env stop` | `EnvStopCommand` |
-| `env restart` | `EnvRestartCommand` |
-| `env login` | `EnvLoginCommand` |
-| `env status` | `EnvStatusCommand` |
-| `env exec` | `EnvExecCommand` |
-| `env refresh` | `EnvRefreshCommand` |
-| `env build` | `EnvBuildCommand` |
-| `env push` | `EnvPushCommand` |
-| `env pull` | `EnvPullCommand` |
-| `env rm` | `EnvRmCommand` |
-
-### Container-passthrough commands
-
-| `name` | Class | redo target | `--all` flag |
-|---|---|---|---|
-| `build` | `BuildCommand` | `all` (or arbitrary target) | -- |
-| `what` | `WhatCommand` | `what` | -- |
-| `test` | `TestCommand` | `test` | yes |
-| `style` | `StyleCommand` | `style` | yes |
-| `analyze` | `AnalyzeCommand` | `analyze` | yes |
-| `clean` | `CleanCommand` | `clean` | yes |
-| `prove` | `ProveCommand` | `prove` | -- |
-| `coverage` | `CoverageCommand` | `coverage` | yes |
-| `publish` | `PublishCommand` | `publish` | yes |
-| `templates` | `TemplatesCommand` | `templates` | -- (`--undo`) |
-
-### Aliases (defined in `cli.py` via `add_alias`)
-
-| Alias | Target | Tier required |
-|---|---|---|
-| `e` | `env` (group) | 2 + 3 |
-| `b` | `build` | 2 + 3 |
-| `t` | `test` | 2 + 3 |
-| `s` | `style` | 2 + 3 |
-| `an` | `analyze` | 2 + 3 |
-| `cl` | `clean` | 2 + 3 |
-| `p` | `prove` | 2 + 3 |
-| `cov` | `coverage` | 2 + 3 |
-| `pub` | `publish` | 2 + 3 |
-| `w` | `what` | 2 + 3 |
-| `tmpl` | `templates` | 2 + 3 |
-
-The tier-3 suite covers both tables -- one minimal test invocation per command and per alias.
-
----
-
-## Appendix D: Glossary
-
-- **Gate** -- the four-command quality gate from [TEST_PLAN.md §Quality Gate](TEST_PLAN.md#quality-gate). The non-negotiable bar that every change clears.
-- **Tier 1 / Tier 2 / Tier 3** -- the three test tiers from [TEST_PLAN.md §Test Tiers](TEST_PLAN.md#test-tiers). Tier 1 is unit, tier 2 is integration via CliRunner + subprocess, tier 3 is container ground-truth.
-- **Drift** -- the spec saying one thing and the code (or workflow) doing another. Three categories: spec-vs-impl, spec-vs-fact, spec-vs-CI. CI9 (drift-prevention guards) targets the third.
-- **Self-audit** -- the deferred per-command-right-tier audit (`test_command_test_coverage.py`): it would assert each command/alias/flag has a test at the right tier. Deferred because the 100% coverage gate plus `test_architecture.py` already answer "is each command tested" (see [Architectural Self-Audit](#architectural-self-audit)).
-- **Provenance** -- the metadata that answers "exactly what did this run test?" (commit SHA, run ID, branch/PR, OS, timestamp, pins, image digest). Captured in the container job's `versions.txt` and in the workflow run's own metadata.
