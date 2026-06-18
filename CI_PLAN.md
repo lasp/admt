@@ -103,6 +103,8 @@ The `-m "not container"` clause is the only deviation: tier 3 tests are marked `
 
 ### CI3. Tier 3 Runs on Every Non-Draft PR
 
+> **Deferred** -- Tier 3 is not part of the initial CI implementation (Tier 1+2; see [Implementation Order](#implementation-order)). This requirement and its draft-handling are preserved for the dedicated Tier 3 planning and re-review.
+
 Tier 3 catches the spec-vs-implementation drift the local gate cannot. It must run before merge, not as a post-merge afterthought. The `pull_request` trigger filters with `types: [opened, synchronize, reopened, ready_for_review]` and a job-level `if: ${{ github.event.pull_request.draft == false }}` so draft PRs are exempt. It also runs on every push to `main` so the post-merge state is validated coherently.
 
 ### CI4. Every Command, Every Flag, Every Alias
@@ -199,7 +201,7 @@ on:
   workflow_dispatch:
 ```
 
-The gate runs on drafts too (a draft with broken style/types/coverage should still be visible). Tier 3 is the one that waits for `ready_for_review`.
+The gate runs on drafts too (a draft with broken style/types/coverage should still be visible).
 
 ### Matrix
 
@@ -249,6 +251,8 @@ The gate needs no Docker daemon -- this is load-bearing and deliberate: tier 1+2
 ---
 
 ## Workflow: container.yml
+
+> **Deferred.** Tier 3 -- the container suite and this workflow -- is not part of the initial CI implementation (Tier 1+2; see [Implementation Order](#implementation-order)). This specification is preserved for the separate, dedicated Tier 3 planning and re-review; it is left as-is.
 
 Tier 3 container tests, against a real Adamant Docker container, named in [TEST_PLAN.md §Tier 3](TEST_PLAN.md#tier-3-container-tests).
 
@@ -367,6 +371,8 @@ The first job uses `:latest` deliberately to detect format-level contract drift.
 ---
 
 ## Tier 3 Fixture Strategy
+
+> **Deferred** -- part of the Tier 3 specification (see [Implementation Order](#implementation-order)); preserved for re-review, left as-is.
 
 Tier 3 needs a real Adamant project to exercise admt against. Two constraints shape the fixture:
 
@@ -552,6 +558,8 @@ Once `admt create project` ([ROADMAP.md](ROADMAP.md) Tier 4) lands, the bootstra
 
 ## Per-Command Coverage Matrix
 
+> **Partly deferred** -- the Tier 3 rows below belong to the deferred Tier 3 specification (see [Implementation Order](#implementation-order)) and are preserved for re-review. The Tier 1+2 rows are exercised by the initial CI gate.
+
 [TEST_PLAN.md §What to Test](TEST_PLAN.md#what-to-test) lists the scenarios every command must cover. The CI plan's job is to enforce that the full matrix is exercised at the right tier.
 
 ### Scenarios (per [TEST_PLAN.md](TEST_PLAN.md))
@@ -735,11 +743,16 @@ Bumping the pair is a single commit: edit `_pins.env`, run tier 3 locally, commi
 
 ## Implementation Order
 
-The implementation lands in a single PR (the placeholder PR #19), in tests-first order: the load-bearing work is the tier-3 container suite and its host script, written and green locally before any workflow YAML. Architectural enforcement is already in place (`tests/unit/test_architecture.py`). The workflow YAML wraps the suite -- it is the last step, not the first. Per [CODING_RULES.md §Agent-Specific Rules](CODING_RULES.md#agent-specific-rules), the implementation edits the workflow to match this spec, never the spec to match the workflow; it touches ARCHITECTURE/CODING_RULES/TEST_PLAN only where this plan amends them.
+The implementation PR (the placeholder PR #19) brings **Tier 1+2 into CI** -- the four-command gate, at parity with the local gate that already exists. That is the whole initial surface. Tier 3 (the local container suite *and* its CI) and the release/upstream/polish workflows are deferred to separately-planned PRs: Tier 3 is large and central enough to warrant its own concept and mental-model review -- and a re-review of the specification below -- before implementation, which lands more cleanly once Tier 1+2 CI is in place. Per [CODING_RULES.md §Agent-Specific Rules](CODING_RULES.md#agent-specific-rules), the implementation edits the workflow to match this spec, never the reverse; it touches ARCHITECTURE/CODING_RULES/TEST_PLAN only where this plan amends them.
 
-1. **Tier-3 suite + `run.sh`, green locally (no CI yet).** The substance: a real container-test tier runnable on any machine with Docker, independent of CI. Tier-3 tests are marked `@pytest.mark.container` and excluded from the four-command gate, so the fast gate stays green; they run via the host script.
+1. **`gate.yml` -- Tier 1+2 in CI (the implementation).** The four-command gate from [TEST_PLAN.md §Quality Gate](TEST_PLAN.md#quality-gate), on a clean machine, on every push and PR -- the same bar developers already run locally.
+   - `.github/workflows/gate.yml` (Linux + macOS matrix), `.uv-version`, `.gitignore` additions (`gate-junit.xml`, `coverage.xml`, `_artifacts/`), `tests/ci_assets/admt-dark.css`.
+   - `uv build` builds the wheel and uploads it as an artifact every run, so packaging/entry-point breakage surfaces here (see [In Scope](#scope-and-non-goals)).
+   - A CLAUDE.md `## CI` section pointing to this plan and the local gate commands; README gate badge.
+   - *Green when:* the four-command gate passes on the matrix.
+2. **Tier 3 -- deferred to a separate planned PR (spec below left as-is for re-review).** The local container suite and its CI workflow are not in the implementation PR; the specification is preserved unmodified ([Tier 3 Fixture Strategy](#tier-3-fixture-strategy), [Per-Command Coverage Matrix](#per-command-coverage-matrix), [Workflow: container.yml](#workflow-containeryml)) and covers:
    - `tests/container/_pins.env` -- the Adamant tag/ref pair (see [Paired Pins](#paired-pins-and-_pinsenv)).
-   - `tests/container/run.sh` -- the host script the workflow later invokes ([Tier 3 Fixture Strategy](#tier-3-fixture-strategy)).
+   - `tests/container/run.sh` -- the host script the workflow invokes ([Tier 3 Fixture Strategy](#tier-3-fixture-strategy)).
    - `tests/container/conftest.py` -- session-scoped fixtures (clone Adamant, register, start container, expose component path).
    - `tests/container/test_*.py` -- one file per command family, covering happy paths and the failure-path matrix from [TEST_PLAN.md §Error Path Tests](TEST_PLAN.md#error-path-tests):
      - `test_env_lifecycle.py` -- start/stop/restart/status/refresh.
@@ -754,21 +767,14 @@ The implementation lands in a single PR (the placeholder PR #19), in tests-first
      - `test_aliases.py` -- one minimal invocation per alias (`e`, `b`, `t`, `s`, `an`, `cl`, `p`, `cov`, `pub`, `w`, `tmpl`).
      - `test_signal_handling.py` -- SIGINT propagation, exit code 130 ([ARCHITECTURE.md §Signal Handling](ARCHITECTURE.md#signal-handling)).
    - `tests/CI.md` -- an operator runbook for running the suite locally via `tests/container/run.sh`.
-   - *Green when:* `bash tests/container/run.sh` passes against a real Adamant container, and the four-command gate (including `test_architecture.py`) passes locally.
-2. **`gate.yml` -- the four-command gate in CI.**
-   - `.github/workflows/gate.yml` (Linux + macOS matrix), `.uv-version`, `.gitignore` additions (`gate-junit.xml`, `coverage.xml`, `_artifacts/`), `tests/ci_assets/admt-dark.css`.
-   - A CLAUDE.md `## CI` section pointing to this plan and the local gate commands; README gate badge.
-   - *Green when:* the four-command gate passes on the matrix.
-3. **`container.yml` -- the tier-3 suite in CI.**
-   - `.github/workflows/container.yml` invokes `tests/container/run.sh` on every non-draft PR and every push to `main`; README container badge.
-   - *Green when:* `container.yml` drives the step-1 suite on a non-draft PR.
-4. **Release, upstream-contract, and polish -- deferred to their own plan + PR.** `release.yml` (PyPI trusted publishing, TestPyPI smoke, optional ARM64), `upstream.yml` (weekly tier-3 against `:latest`, drift issue template, `tests/contract/` format tests), and polish (ARM64 verification, Codecov, status badges, whole-file-size trip-wire, plugin-author CI template) are out of scope for the implementation PR; the [release.yml](#workflow-releaseyml-roadmap) and [upstream.yml](#workflow-upstreamyml-roadmap) sections carry enough to spec that follow-on effort when it's prioritized.
+   - `.github/workflows/container.yml` -- runs the suite via `run.sh` on every non-draft PR and push to `main`.
+3. **Release, upstream-contract, and polish -- deferred to their own plan + PR.** `release.yml` (PyPI publish), `upstream.yml` (weekly tier-3 against `:latest`), and polish are out of scope for the implementation PR; the [release.yml](#workflow-releaseyml-roadmap) and [upstream.yml](#workflow-upstreamyml-roadmap) sections carry enough to spec that follow-on effort when it's prioritized.
 
 ---
 
 ## Test Plan for the Workflows Themselves
 
-The workflows are code; they have their own acceptance criteria.
+The workflows are code; they have their own acceptance criteria. For the initial implementation the only workflow is `gate.yml`; the `container.yml`/`run.sh` criteria below apply when the deferred Tier 3 lands (see [Implementation Order](#implementation-order)).
 
 ### Per-Workflow Acceptance
 
@@ -789,6 +795,8 @@ Each new job:
 ---
 
 ## Constraints and Assumptions
+
+> The wall-time and upstream constraints below concern Tier 3 and `upstream.yml`, both deferred (see [Implementation Order](#implementation-order)); they are preserved for that planning. The initial `gate.yml` implementation runs the four-command gate, whose wall time is the ordinary local gate's.
 
 ### Wall-time reality
 
