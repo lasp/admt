@@ -177,7 +177,7 @@ A force-push to a PR cancels the in-flight CI run for that ref. Pushes to differ
 
 ### Default Shell
 
-Every workflow uses the predictable-shell convention from `fp32-fsw-xmera`:
+Every workflow sets a predictable shell:
 
 ```yaml
 defaults:
