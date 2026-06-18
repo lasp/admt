@@ -60,7 +60,7 @@ This list is also the test plan for whether CI is doing its job. If a future dri
 - **Local rehearsal via a host script** -- tier-3 workflow logic is exposed as `tests/container/run.sh`, the single entry point CI invokes and developers run locally, so the test logic is rehearsable on any host with Docker without a separate local Actions runner.
 - **Toolchain pinning** for `uv`, the Python interpreter, the Adamant container image, and any GitHub Actions third-party action versions.
 - **Failure forensics** -- every failure produces an artifact bundle with provenance metadata (commit SHA, run ID, branch, OS) and human-navigable HTML reports.
-- **Wheel build on every run.** `uv build` runs in the gate and uploads the wheel as an artifact on every push and PR, so packaging and entry-point breakage (`[project.scripts]` wiring, missing package data) surfaces immediately instead of first failing at release. Publishing that wheel to PyPI stays a release-only action ([release.yml](#workflow-releaseyml-roadmap)).
+- **Wheel build on every run.** `uv build` runs in the gate and uploads the wheel as an artifact on every push and PR, so packaging and entry-point breakage (`[project.scripts]` wiring, missing package data) surfaces immediately instead of first failing at release. Publishing that wheel to PyPI is deferred ([release.yml](#workflow-releaseyml-roadmap) is Roadmap); the gate's wheel artifact is the packaging signal until then.
 
 ### Roadmap (in scope to *describe* here, not to land in the initial CI surface)
 
@@ -159,8 +159,8 @@ Four workflow files, each with one purpose. A change to one workflow does not re
   workflows/
     gate.yml          # Tier 1+2: ruff format, ruff check, mypy, pytest -m "not container"
     container.yml     # Tier 3: pytest -m container, against the pinned Adamant image
-    release.yml       # Roadmap: build wheel + publish to PyPI on release
-    upstream.yml      # Roadmap: weekly tier 3 against latest Adamant image
+    release.yml       # Roadmap (deferred): PyPI publish (wheel already ships as a gate artifact)
+    upstream.yml      # Roadmap (deferred): weekly tier 3 vs :latest
 ```
 
 ### Concurrency
@@ -324,7 +324,7 @@ jobs:
 
 ## Workflow: release.yml (Roadmap)
 
-Build the admt wheel, publish it to PyPI, and verify ARM64 on release. Implements *after* gate.yml and container.yml are stable on `main`.
+**Deferred -- not part of the initial CI implementation.** Publish the admt wheel to PyPI on release (and verify ARM64). The gate already builds and artifact-checks the wheel every run, so publishing is the only release-exclusive step; it is specced here for the later planned effort and left as-is for re-review then.
 
 ### Triggers
 
@@ -347,7 +347,7 @@ on:
 
 ## Workflow: upstream.yml (Roadmap)
 
-Weekly verification that admt still works against the latest Adamant container.
+**Deferred -- not part of the initial CI implementation.** Weekly verification that admt still works against the latest Adamant container; specced here for the later planned effort and left as-is for re-review then.
 
 ### Purpose
 
