@@ -23,7 +23,6 @@ This plan is the spec for admt's CI -- the workflow files under `.github/workflo
 - [Architectural Self-Audit](#architectural-self-audit)
 - [Artifacts and Provenance](#artifacts-and-provenance)
 - [Toolchain Pinning](#toolchain-pinning)
-- [Drift-Prevention Guards](#drift-prevention-guards)
 - [Implementation Order](#implementation-order)
 - [Test Plan for the Workflows Themselves](#test-plan-for-the-workflows-themselves)
 - [Constraints and Assumptions](#constraints-and-assumptions)
@@ -96,7 +95,7 @@ mypy src/
 pytest --cov --cov-branch --cov-fail-under=100 -m "not container"
 ```
 
-The `-m "not container"` clause is the only deviation: tier 3 tests are marked `@pytest.mark.container` and run in a separate workflow ([CI3](#ci3-tier-3-runs-on-every-non-draft-pr)). The drift-prevention test in [CI9](#ci9-drift-prevention-guards) verifies the rest of the command string matches `TEST_PLAN.md` byte-for-byte.
+The `-m "not container"` clause is the only deviation: tier 3 tests are marked `@pytest.mark.container` and run in a separate workflow ([CI3](#ci3-tier-3-runs-on-every-non-draft-pr)).
 
 ### CI2. The Coverage Threshold Is Hard
 
@@ -140,11 +139,7 @@ Every failed run uploads enough artifact for forensic diagnosis without a re-run
 
 Retention 14 days. Artifact names are stable so links from PR comments do not rot.
 
-### CI9. Drift-Prevention Guards
-
-CI cannot become a separate spec. A handful of small unit tests in `tests/unit/test_ci_alignment.py` keep the workflow YAML in sync with this plan and TEST_PLAN.md. The tests run in tier 1 (no Docker required) and protect the spec/CI alignment. See [Drift-Prevention Guards](#drift-prevention-guards).
-
-### CI10. Spec Traceability
+### CI9. Spec Traceability
 
 Every step in every workflow file ties back to a section of ARCHITECTURE / CODING_RULES / TEST_PLAN / this document. Steps with no spec home are rejected at review (per [CODING_RULES.md §What to Review Per PR](CODING_RULES.md#what-to-review-per-pr)). The workflow YAML carries a top-of-file comment naming the spec sections it implements.
 
@@ -365,7 +360,7 @@ on:
 ### Jobs
 
 1. **upstream-tier3** -- run `pytest -m container` against `ghcr.io/lasp/adamant:latest`. On failure, opens an issue titled `Upstream contract drift: <commit-sha>` with the failure log and a diff of the relevant outputs (`redo what`, `docker compose ps --format json`, etc.) between `:0.2` and `:latest`. Issue label: `upstream-drift`.
-2. **pin-parity-remote** -- pulls `ghcr.io/lasp/adamant:${ADAMANT_TAG}` (the *pinned* tag, not `:latest`), reads the OCI image label `org.opencontainers.image.revision`, and asserts it matches `ADAMANT_REF` from `tests/container/_pins.env`. This is the *remote* arm of the [Version-Pin Parity Audit](#version-pin-parity-audit): the local audit can only verify that the consumer files reference `_pins.env` correctly; only the remote check answers "does the upstream container at this tag actually correspond to this source ref?". Drift opens an issue titled `Adamant pin drift: <tag> ≠ <ref>` with the OCI label and the local `_pins.env` snapshot; the fix is to bump `_pins.env` (or, rarely, to re-tag upstream).
+2. **pin-parity-remote** -- pulls `ghcr.io/lasp/adamant:${ADAMANT_TAG}` (the *pinned* tag, not `:latest`), reads the OCI image label `org.opencontainers.image.revision`, and asserts it matches `ADAMANT_REF` from `tests/container/_pins.env`. It is a remote pin-parity check: only a network round-trip to GHCR answers "does the upstream container at this tag actually correspond to this source ref?". Drift opens an issue titled `Adamant pin drift: <tag> ≠ <ref>` with the OCI label and the local `_pins.env` snapshot; the fix is to bump `_pins.env` (or, rarely, to re-tag upstream).
 
 The first job uses `:latest` deliberately to detect format-level contract drift. The rest of CI uses pinned tags ([CI6](#ci6-toolchain-pinning)); this workflow's job is to *break* when upstream moves.
 
@@ -590,23 +585,13 @@ The 24 concrete commands (see [Appendix C](#appendix-c-command-inventory)) split
 
 11 aliases in `cli.py` (`e`, `b`, `t`, `s`, `an`, `cl`, `p`, `cov`, `pub`, `w`, `tmpl`). Tier 3 confirms each invokes the right command with one minimal test per alias (`test_aliases.py`).
 
-### How the Matrix Stays Honest
-
-Hand-maintained tables drift, so this matrix is a *specification* of intent, not a hand-checked list: the tier-3 suite implements it, and the 100% coverage gate plus `test_architecture.py` keep every command and alias exercised by some test. A parametrized introspection audit that would mechanically assert each command/alias/flag has a test *at the right tier* is deferred until the tier-3 suite exists (see [Architectural Self-Audit](#architectural-self-audit)).
-
 ---
 
 ## Architectural Self-Audit
 
 Architectural enforcement lives in `tests/unit/test_architecture.py` (see [TEST_PLAN.md §Architectural Enforcement Tests](TEST_PLAN.md#architectural-enforcement-tests)): it asserts the import/dependency rules, the `Command` metadata contract, CLI↔Command parity (every `Command` has a Click entry and vice versa), the `cli.py` size cap, and the no-circular-imports rule. This plan relies on it as the architectural baseline; the gate runs it like any other tier-1 test.
 
-A more aggressive **per-command-right-tier self-audit** -- a `tests/unit/test_command_test_coverage.py` that parametrizes over every command, alias, and flag and asserts a test exists at each tier -- is **deferred**, not part of the initial CI surface:
-
-- The 100% line + branch coverage gate ([CI2](#ci2-the-coverage-threshold-is-hard)) already forces every command to be exercised by *some* test; a no-op test leaves coverage holes the gate fails on.
-- The audit's only marginal guarantee over coverage is "tested at the *right tier*." That is meaningful only once a tier-3 suite exists to be the right tier -- which is after the tier-3 tests are written and green (see [Implementation Order](#implementation-order)). Until then, a runtime-introspection audit adds maintenance surface without a guarantee the coverage gate does not already provide.
-- Revisit once tier 3 is in place: if "every container-touching command has a tier-3 test" proves worth guarding against regression, add *that arm only* then.
-
-Until then, "is each command tested?" is answered by the coverage gate plus `test_architecture.py`'s parity test -- not by a separate introspection audit.
+A per-command-*right-tier* audit (asserting each command/alias/flag has a test at each tier) is **not a CI concern** and is deferred indefinitely. The 100% line + branch coverage gate ([CI2](#ci2-the-coverage-threshold-is-hard)) already forces every command to be exercised by some test, and `test_architecture.py` enforces the structural contract; together they answer "is each command tested" without runtime-introspection machinery. An implementer may spot-check tier placement by hand during a change; CI does not.
 
 ---
 
@@ -617,7 +602,7 @@ Every CI run produces two surfaces, each carrying one signal:
 - **In-PR check view** (auto-rendered by GitHub from JUnit) -- per-test pass/fail, scannable on the PR's "Checks" tab without leaving the browser. Powered by [`mikepenz/action-junit-report@v4`](https://github.com/mikepenz/action-junit-report). One step in each workflow, one POSTed check-run per job.
 - **Downloadable artifact bundle** (uploaded by `actions/upload-artifact@v4`) -- forensic detail when a failure needs more than the check view: themed coverage HTML (per-file line + branch drilldown), raw JUnit XML, raw coverage XML (Cobertura, for codecov-style consumers), and tier-3-only diagnostics (`docker compose logs`, version stamps).
 
-The audit results (pin-parity, spec-alignment) are pytest tests; their PASS/FAIL surfaces in the same JUnit-rendered check view as everything else. A reviewer who wants more than "PASS" clicks the test name in the check view and gets the assertion message verbatim from JUnit -- which already names the disagreeing file or missing test for parametrized failures. The custom dashboard renderer is intentionally absent; coverage HTML is the only piece worth owning the rendering of, and the `--extra-css` hook does that without owning anything else.
+Test results surface as PASS/FAIL in the JUnit-rendered check view. A reviewer who wants more than "PASS" clicks the test name in the check view and gets the assertion message verbatim from JUnit -- which already names the disagreeing file or missing test for parametrized failures. The custom dashboard renderer is intentionally absent; coverage HTML is the only piece worth owning the rendering of, and the `--extra-css` hook does that without owning anything else.
 
 ### Bundle Layout
 
@@ -704,7 +689,7 @@ Artifact name: `<workflow>-<leg>-<sha>` (e.g., `gate-ubuntu-24.04-c0ffee1`). Sta
 
 ## Toolchain Pinning
 
-Single-source-of-truth principle: every pin lives in exactly one place, referenced from CI. Drift across embedded references is the failure mode this section is built to prevent -- humans and AI agents both miss them, so the plan treats every pin as audited surface ([Version-Pin Parity Audit](#version-pin-parity-audit)).
+Single-source-of-truth principle: every pin lives in exactly one place, referenced from CI. Each pin is read from that single source at runtime where possible, so a consumer cannot drift to a stale copy.
 
 | Tool | Pin file | Pin key | Bump procedure |
 |---|---|---|---|
@@ -712,9 +697,9 @@ Single-source-of-truth principle: every pin lives in exactly one place, referenc
 | Python | `.python-version` (existing) | (whole-file value) | Standard convention; uv reads it natively |
 | Adamant container image tag | `tests/container/_pins.env` (new) | `ADAMANT_TAG` | Couple with `ADAMANT_REF` (see [Paired Pins](#paired-pins-and-_pinsenv)); single commit |
 | Adamant ref for fixture clone | `tests/container/_pins.env` (new) | `ADAMANT_REF` | Same as above |
-| Third-party GitHub Actions | Inline `org/action@<sha>  # vX.Y.Z` in workflow YAML | (per `uses:` line) | Renovate/Dependabot opens a PR; the parity audit asserts the SHA is 40-hex and the comment names a version |
+| Third-party GitHub Actions | Inline `org/action@<sha>  # vX.Y.Z` in workflow YAML | (per `uses:` line) | Renovate/Dependabot opens a PR; pin a 40-hex SHA with a `# vX.Y.Z` comment |
 
-Every pin file is read by its consumer at runtime where possible (e.g., `cat .uv-version`, `source tests/container/_pins.env`) so consumers can never have a stale copy. Where a runtime read is awkward (workflow YAML, doc files), the [Version-Pin Parity Audit](#version-pin-parity-audit) verifies the consumer references the pin file by name and contains the current value.
+Every pin file is read by its consumer at runtime where possible (e.g., `cat .uv-version`, `source tests/container/_pins.env`) so consumers can never have a stale copy.
 
 A future evolution -- bundle the pinned values in a `[tool.admt.ci]` section of `pyproject.toml` -- is rejected for now: that namespace doesn't exist, and adding it for a handful of values is overkill. Filename conventions readers already know (`.uv-version`, `_pins.env`) cost less.
 
@@ -727,8 +712,7 @@ The pair lives in `tests/container/_pins.env`. Both keys use bash's conditional-
 ```sh
 # Pinned versions for tier 3 fixtures.
 # These two values are coupled -- the Adamant container at ADAMANT_TAG was
-# built from the source at ADAMANT_REF. Bump them together; the parity audit
-# in tests/unit/test_pin_audit.py verifies they remain coupled.
+# built from the source at ADAMANT_REF. Bump them together.
 #
 # Use `:=` so an explicit env override wins over the file value:
 #   ADAMANT_REF=main bash tests/container/run.sh   # tests against upstream main
@@ -745,296 +729,7 @@ docker pull "ghcr.io/lasp/adamant:${ADAMANT_TAG}"
 git -C "$ADAMANT_DIR" checkout "${ADAMANT_REF}"
 ```
 
-Bumping the pair is a single commit: edit `_pins.env`, run tier 3 locally, commit titled `chore: bump Adamant pin to <tag> / <ref>`. The audit ([Version-Pin Parity Audit](#version-pin-parity-audit)) ensures both values are present, well-formed, and that no consumer file embeds a different tag or ref. The *remote* check -- does `:0.2` actually correspond to `v0.2.0` on Adamant's side? -- runs in [upstream.yml](#workflow-upstreamyml-roadmap): the OCI image label `org.opencontainers.image.revision` is read from the pulled container and compared to `ADAMANT_REF`. Drift opens an `upstream-drift` issue.
-
----
-
-## Drift-Prevention Guards
-
-CI cannot become a separate spec. Two test modules run as part of the gate and keep CI honest:
-
-- **`tests/unit/test_ci_alignment.py`** -- spec/CI alignment. Verifies the workflow YAML matches TEST_PLAN.md and this plan.
-- **`tests/unit/test_pin_audit.py`** -- version-pin parity. Verifies every embedded version reference matches its single source of truth.
-
-The pattern matches the existing `tests/unit/test_architecture.py`: parametrized tier-1 tests, no Docker required, fail loudly with a specific message.
-
-### Tier-3 Spec-Deviation Policy
-
-Tier 3 occasionally surfaces a case where admt's behavior contradicts a `TEST_PLAN.md` "What to Test" or `ARCHITECTURE.md` clause that tier 1+2 didn't catch (because mocks faithfully reproduced the wrong behavior). When this happens, the right path is:
-
-1. **Pin the tier 3 test to current behavior** with a comment naming the spec line and the discrepancy. Use a relaxed assertion (`returncode != 0` plus a substring match on the user-visible message) so the test still provides regression value while the spec/impl decision is open.
-2. **File a follow-up** -- separate PR or issue -- to reconcile spec and impl. The default expected resolution is to *tighten the spec* (impl is most often the surface that drifted); loosening the spec is rare but possible when new information or use-cases surface.
-3. **Tighten the tier 3 assertion** in the follow-up PR once spec and impl agree.
-
-This keeps tier 3 from becoming a test-vs-impl tug-of-war and ensures spec discrepancies surface as explicit decisions rather than as silent test relaxations. The policy lives in TEST_PLAN.md §Regression Policy as the long-term home; this CI plan references it because tier 3 is where the policy fires most often.
-
-### Tier-2 Subprocess Scope
-
-Tier 2's "dual approach" -- CliRunner plus subprocess invocation -- narrows in scope: subprocess form is reserved for packaging-sensitive smokes (entry-point wiring, `[project.scripts]` regression catch), not per-command parity. CliRunner covers per-command behavior at tier 2 because it exercises real CLI parsing, dispatch, and Context wiring while staying fast. Subprocess invocation is slow and adds little signal beyond CliRunner for command-level behavior, so it stays scoped to a small set of packaging smokes -- one or two tests, not one-per-command.
-
-This refinement lives in TEST_PLAN.md §Test Tiers §Tier 2 as the long-term home; this CI plan references it so the audit's tier-2 arm doesn't grow a "every command also has a subprocess test" expectation.
-
-### Spec/CI Alignment Guards
-
-- **The gate-command strings in `gate.yml` match `TEST_PLAN.md` byte-for-byte** (modulo the `--junitxml=...` and `-m "not container"` extensions documented in [CI1](#ci1-same-gate-from-a-clean-machine)).
-- **`container.yml` invokes `tests/container/run.sh`** -- so CI and local rehearsal share one entry point.
-
-```python
-# tests/unit/test_ci_alignment.py
-from pathlib import Path
-import re
-
-import yaml
-
-
-def _gate_commands_in_test_plan() -> list[str]:
-    text = Path("TEST_PLAN.md").read_text()
-    block = re.search(r"## Quality Gate.*?```bash\n(.*?)\n```", text, flags=re.DOTALL)
-    assert block, "Could not locate Quality Gate block in TEST_PLAN.md"
-    return [line.strip() for line in block.group(1).splitlines() if line.strip()]
-
-
-def test_gate_workflow_runs_the_four_commands():
-    spec_commands = _gate_commands_in_test_plan()
-    assert len(spec_commands) == 4
-
-    workflow = yaml.safe_load(Path(".github/workflows/gate.yml").read_text())
-    run_strings = " ".join(
-        s["run"] for s in workflow["jobs"]["gate"]["steps"] if "run" in s
-    )
-
-    for cmd in spec_commands:
-        # The CI version may add `--junitxml=...` or `-m "not container"` to pytest;
-        # match by the leading three tokens of each command (the verb + key flags).
-        leading = " ".join(cmd.split()[:3])
-        assert leading in run_strings, (
-            f"Gate command {leading!r} from TEST_PLAN.md not found in gate.yml"
-        )
-
-
-def test_container_workflow_invokes_run_script():
-    workflow = yaml.safe_load(Path(".github/workflows/container.yml").read_text())
-    runs = " ".join(
-        s["run"] for s in workflow["jobs"]["container"]["steps"] if "run" in s
-    )
-    assert "tests/container/run.sh" in runs, (
-        "container.yml must call tests/container/run.sh so the host-script "
-        "fallback stays the canonical entry point (CI5)."
-    )
-```
-
-A change to TEST_PLAN.md's gate block without a corresponding workflow update fails the gate. A change to the workflow without a corresponding doc update fails the gate. The spec/CI contract is enforced symmetrically.
-
-### Version-Pin Parity Audit
-
-Embedded version references rot silently. A workflow file that hardcodes `uv 0.7.13` while `.uv-version` says `0.7.14`, an Adamant tag in a comment that lags the real tag in `_pins.env`, a third-party action SHA whose comment-version doesn't match the SHA -- humans skim past these, and AI agents skim past them faster. The pin audit makes every embedded value an asserted invariant.
-
-The audit walks a registered manifest of pins. Each entry names a single source of truth and a list of consumers (file + matcher). The test parametrizes over the manifest; per-pin failures name exactly which file disagrees with the source.
-
-#### Pin Manifest
-
-```python
-# tests/unit/test_pin_audit.py
-from dataclasses import dataclass
-from pathlib import Path
-import re
-
-
-@dataclass(frozen=True)
-class Pin:
-    """One version pin and its consumers.
-
-    `source` is the source-of-truth file. If `key` is None, the entire
-    file's stripped content is the value (the `.uv-version` / `.python-version`
-    convention). If `key` is set, the file is parsed as KEY=VALUE pairs and
-    `key` selects which one.
-
-    Each consumer is (file, matcher). A matcher is either:
-    - a string: the literal value must appear somewhere in the file, OR
-    - a compiled regex: must match (with named group `value` capturing the
-      consumer's local copy of the value, which is then compared to source).
-    """
-
-    name: str
-    source: Path
-    key: str | None
-    consumers: tuple[tuple[Path, str | re.Pattern[str]], ...]
-
-
-PINS: tuple[Pin, ...] = (
-    Pin(
-        name="uv",
-        source=Path(".uv-version"),
-        key=None,
-        consumers=(
-            # gate.yml reads .uv-version at runtime; just verify the
-            # filename is referenced.
-            (Path(".github/workflows/gate.yml"), ".uv-version"),
-            (Path(".github/workflows/container.yml"), ".uv-version"),
-            # CLAUDE.md mentions the file by name so contributors find it.
-            (Path("CLAUDE.md"), ".uv-version"),
-        ),
-    ),
-    Pin(
-        name="python",
-        source=Path(".python-version"),
-        key=None,
-        consumers=(
-            (Path(".github/workflows/gate.yml"), ".python-version"),
-            (Path(".github/workflows/container.yml"), ".python-version"),
-            # pyproject.toml's requires-python uses the same minor version.
-            # Use a regex so the source's "3.14" matches "requires-python = >=3.14".
-            (Path("pyproject.toml"), re.compile(r'requires-python\s*=\s*">=(?P<value>\d+\.\d+)"')),
-        ),
-    ),
-    Pin(
-        name="adamant_tag",
-        source=Path("tests/container/_pins.env"),
-        key="ADAMANT_TAG",
-        consumers=(
-            # run.sh sources _pins.env at runtime, but the pin file itself is
-            # the only place the tag is allowed to appear textually.
-            # Verifying that `:0.2` is NOT hardcoded anywhere is a paired check;
-            # see test_no_orphan_adamant_tags below.
-            (Path("tests/container/run.sh"), "_pins.env"),
-            (Path(".github/workflows/container.yml"), "_pins.env"),
-        ),
-    ),
-    Pin(
-        name="adamant_ref",
-        source=Path("tests/container/_pins.env"),
-        key="ADAMANT_REF",
-        consumers=(
-            (Path("tests/container/run.sh"), "_pins.env"),
-        ),
-    ),
-)
-
-
-def _read_pin(pin: Pin) -> str:
-    text = pin.source.read_text()
-    if pin.key is None:
-        return text.strip()
-    for line in text.splitlines():
-        line = line.split("#", 1)[0].strip()
-        if "=" in line:
-            k, v = line.split("=", 1)
-            if k.strip() == pin.key:
-                return v.strip().strip('"').strip("'")
-    pytest.fail(f"Key {pin.key!r} not found in {pin.source}")
-
-
-@pytest.mark.parametrize("pin", PINS, ids=lambda p: p.name)
-def test_pin_source_exists_and_has_value(pin: Pin):
-    assert pin.source.exists(), f"Pin source {pin.source} does not exist"
-    value = _read_pin(pin)
-    assert value, f"Pin {pin.name} in {pin.source} is empty"
-
-
-@pytest.mark.parametrize(
-    "pin,consumer_path,matcher",
-    [(pin, p, m) for pin in PINS for (p, m) in pin.consumers],
-    ids=lambda v: v.name if isinstance(v, Pin) else str(v),
-)
-def test_pin_consumer_references_source(pin, consumer_path, matcher):
-    text = consumer_path.read_text()
-    if isinstance(matcher, str):
-        assert matcher in text, (
-            f"Consumer {consumer_path} of pin {pin.name!r} does not "
-            f"reference the pin source ({matcher!r} missing)."
-        )
-    else:
-        m = matcher.search(text)
-        assert m, f"Pattern {matcher.pattern!r} not found in {consumer_path}"
-        local = m.group("value")
-        source_value = _read_pin(pin)
-        # Prefix-match so the source "3.14" matches consumer "3.14" exactly,
-        # but the constraint version `>=3.14` parsing already extracted "3.14".
-        assert local == source_value, (
-            f"{consumer_path} embeds {pin.name}={local!r} but {pin.source} "
-            f"says {source_value!r}. Bump together."
-        )
-
-
-def test_no_orphan_adamant_tags():
-    """No executable file outside _pins.env may hardcode a `ghcr.io/lasp/adamant:<tag>` value.
-
-    Catches the case where a contributor copies a tag into a workflow comment
-    or a docstring and forgets to update it when _pins.env moves. Markdown is
-    exempt by design: docs (including this plan) legitimately mention tags for
-    exposition, and enforcement targets the executable surfaces where a stale
-    tag changes behavior.
-    """
-    pin = next(p for p in PINS if p.name == "adamant_tag")
-    pinned_value = _read_pin(pin)
-    bad = re.compile(rf"ghcr\.io/lasp/adamant:(?!\$\{{ADAMANT_TAG\}})[^\s\"']+")
-    excluded_dirs = {
-        ".git", ".venv", "_artifacts", "__pycache__",
-        ".mypy_cache", ".ruff_cache", ".pytest_cache", "htmlcov",
-        "node_modules", "dist", "build",
-    }
-    for path in Path(".").rglob("*"):
-        if not path.is_file() or path.suffix not in {".yml", ".yaml", ".sh", ".py", ".toml"}:
-            continue
-        if path == pin.source or any(part in excluded_dirs for part in path.parts):
-            continue
-        for n, line in enumerate(path.read_text(errors="ignore").splitlines(), start=1):
-            for m in bad.finditer(line):
-                tag = m.group(0).split(":", 1)[1]
-                # `:latest` is allowed only in upstream.yml.
-                if tag == "latest" and path.name == "upstream.yml":
-                    continue
-                pytest.fail(
-                    f"{path}:{n} hardcodes Adamant tag {tag!r}; reference "
-                    f"$ADAMANT_TAG (sourced from tests/container/_pins.env) instead."
-                )
-
-
-def test_third_party_action_pins_have_sha_and_version_comment():
-    """Every `uses: org/action@<ref>` either uses a first-party or vendor-official
-    action (`actions/*`, `github/*`, `astral-sh/*`) at a major version (`@v6`), or
-    pins a 40-char SHA with a `# vX.Y.Z` comment naming the human version. Catches
-    drift between the SHA and the comment, and unpinned third-party actions.
-    """
-    sha40 = re.compile(r"^[0-9a-f]{40}$")
-    use_line = re.compile(
-        r"^\s*-?\s*uses:\s*(?P<repo>[\w./-]+)@(?P<ref>[\w.-]+)"
-        r"(?:\s*#\s*(?P<comment>.*))?$"
-    )
-    for wf in Path(".github/workflows").glob("*.yml"):
-        for n, line in enumerate(wf.read_text().splitlines(), start=1):
-            m = use_line.match(line)
-            if not m:
-                continue
-            repo, ref, comment = m["repo"], m["ref"], m["comment"]
-            first_party = repo.startswith(("actions/", "github/", "astral-sh/"))
-            if first_party:
-                # Major-version refs are acceptable: actions/checkout@v6, etc.
-                continue
-            assert sha40.match(ref), (
-                f"{wf}:{n} third-party action {repo}@{ref} must pin a 40-char SHA"
-            )
-            assert comment and re.search(r"\bv?\d+\.\d+", comment), (
-                f"{wf}:{n} third-party action {repo}@{ref} must carry a "
-                f"`# vX.Y.Z` comment naming the human version"
-            )
-```
-
-#### What This Catches
-
-- A workflow that hardcodes `uv 0.7.13` while `.uv-version` moves to `0.7.14`. (Caught: workflow's `.uv-version` reference is structural; the audit also re-runs the gate, which would fail to find the right uv if the workflow's runtime read got broken.)
-- A `pyproject.toml` `requires-python = ">=3.13"` while `.python-version` says `3.14`.
-- An `ADAMANT_TAG=0.2` in `_pins.env` while a stale `ghcr.io/lasp/adamant:0.1` lurks in a workflow comment, helper script, or test docstring.
-- An `ADAMANT_REF` that is empty or non-existent.
-- A third-party GitHub Action `uses: third-party/foo@v1` (unpinned) or pinned to a SHA without a `# vX.Y.Z` comment.
-
-#### What This Does Not Catch
-
-- The *remote* parity question -- "does `:0.2` actually equal `v0.2.0` in Adamant's source?" That requires a network round-trip to GHCR to read the OCI label `org.opencontainers.image.revision`. Performed in [upstream.yml](#workflow-upstreamyml-roadmap), not in the gate.
-- Drift between a tagged third-party action (`@v6`) and the actual code at that tag. Renovate/Dependabot is the tool for this; the audit only enforces the local-pinning convention.
-- Semantic correctness of the value (e.g., does the pinned uv version still install on Python 3.14?). That's caught by the gate run itself.
-
-The audit runs in tier 1, costs a few milliseconds, and fails parametrized so contributors see exactly which (pin, consumer) pair is broken. Adding a new pin -- a new tool, a new paired version -- is a one-entry edit to the `PINS` tuple.
+Bumping the pair is a single commit: edit `_pins.env`, run tier 3 locally, commit titled `chore: bump Adamant pin to <tag> / <ref>`. The *remote* check -- does `:0.2` actually correspond to `v0.2.0` on Adamant's side? -- runs in [upstream.yml](#workflow-upstreamyml-roadmap): the OCI image label `org.opencontainers.image.revision` is read from the pulled container and compared to `ADAMANT_REF`. Drift opens an `upstream-drift` issue.
 
 ---
 
@@ -1062,11 +757,10 @@ The implementation lands in a single PR (the placeholder PR #19), in tests-first
    - *Green when:* `bash tests/container/run.sh` passes against a real Adamant container, and the four-command gate (including `test_architecture.py`) passes locally.
 2. **`gate.yml` -- the four-command gate in CI.**
    - `.github/workflows/gate.yml` (Linux + macOS matrix), `.uv-version`, `.gitignore` additions (`gate-junit.xml`, `coverage.xml`, `_artifacts/`), `tests/ci_assets/admt-dark.css`.
-   - `tests/unit/test_ci_alignment.py` (`gate.yml` now exists to assert against) and `tests/unit/test_pin_audit.py` (the `PINS` manifest covers `uv`, `python`, the third-party-action SHA convention, and the Adamant pair from step 1's `_pins.env`, with `test_no_orphan_adamant_tags`).
    - A CLAUDE.md `## CI` section pointing to this plan and the local gate commands; README gate badge.
    - *Green when:* the four-command gate passes on the matrix.
 3. **`container.yml` -- the tier-3 suite in CI.**
-   - `.github/workflows/container.yml` invokes `tests/container/run.sh` on every non-draft PR and every push to `main`; `tests/unit/test_ci_alignment.py` gains the `container.yml`-invokes-`run.sh` assertion; README container badge.
+   - `.github/workflows/container.yml` invokes `tests/container/run.sh` on every non-draft PR and every push to `main`; README container badge.
    - *Green when:* `container.yml` drives the step-1 suite on a non-draft PR.
 4. **Release, upstream-contract, and polish -- deferred to their own plan + PR.** `release.yml` (PyPI trusted publishing, TestPyPI smoke, optional ARM64), `upstream.yml` (weekly tier-3 against `:latest`, drift issue template, `tests/contract/` format tests), and polish (ARM64 verification, Codecov, status badges, whole-file-size trip-wire, plugin-author CI template) are out of scope for the implementation PR; the [release.yml](#workflow-releaseyml-roadmap) and [upstream.yml](#workflow-upstreamyml-roadmap) sections carry enough to spec that follow-on effort when it's prioritized.
 
@@ -1082,8 +776,7 @@ Every workflow change goes through this checklist before merge:
 
 1. **A YAML parse/lint of the workflow file** passes (catches syntax errors before push).
 2. **`bash tests/container/run.sh` succeeds locally** against a real Adamant container (for container.yml; gate.yml's acceptance is its four gate commands green locally).
-3. **The drift-prevention tests in `tests/unit/test_ci_alignment.py`** still pass.
-4. **The PR description includes the local run output** of step 2 (a short paste, not the full log) -- so the reviewer sees the rehearsal happened.
+3. **The PR description includes the local run output** of step 2 (a short paste, not the full log) -- so the reviewer sees the rehearsal happened.
 
 ### Per-Job Acceptance
 
