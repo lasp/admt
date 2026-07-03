@@ -604,7 +604,7 @@ Every CI run produces two surfaces, each carrying one signal:
 - **In-PR check view** (auto-rendered by GitHub from JUnit) -- per-test pass/fail, scannable on the PR's "Checks" tab without leaving the browser. Powered by [`mikepenz/action-junit-report@v4`](https://github.com/mikepenz/action-junit-report). One step in each workflow, one POSTed check-run per job.
 - **Downloadable artifact bundle** (uploaded by `actions/upload-artifact@v4`) -- forensic detail when a failure needs more than the check view: themed coverage HTML (per-file line + branch drilldown), raw JUnit XML, raw coverage XML (Cobertura format), and tier-3-only diagnostics (`docker compose logs`, version stamps).
 
-Test results surface as PASS/FAIL in the JUnit-rendered check view. A reviewer who wants more than "PASS" clicks the test name in the check view and gets the assertion message verbatim from JUnit -- which already names the disagreeing file or missing test for parametrized failures. The custom dashboard renderer is intentionally absent; coverage HTML is the only piece worth owning the rendering of, and the `--extra-css` hook does that without owning anything else.
+Test results surface as PASS/FAIL in the JUnit-rendered check view. A reviewer who wants more than "PASS" clicks the test name in the check view and gets the assertion message verbatim from JUnit -- which already names the disagreeing file or missing test for parametrized failures.
 
 ### Bundle Layout
 
@@ -674,14 +674,6 @@ uv run coverage html \
 - Sets uncovered lines and branches red so they contrast cleanly with the gold-pass motif.
 
 The output lands in `_artifacts/gate/htmlcov/`. After downloading the artifact zip, opening `htmlcov/index.html` in a browser gives per-file line + branch coverage navigation. Coverage HTML is the only piece of the bundle we own enough rendering of to theme; everything else comes from upstream tooling.
-
-### Why no custom dashboard
-
-GitHub's per-test check view (driven by `mikepenz/action-junit-report@v4`) already shows what a custom dashboard would: every test, its pass/fail, the assertion message on failure. The audits are designed so that JUnit's failure messages are self-describing -- e.g., `"BuildCommand missing tier-3 test in tests/container/"` -- so the per-test view tells the whole story for any audit row.
-
-Theming the coverage HTML via `--extra-css` is the only place owning the rendering pays back, because coverage's per-file drilldown is genuinely useful and the CSS hook is one parameter. Everything else stands on upstream tooling.
-
-If a future need arises for a unified dashboard consolidating cross-job data the check view cannot show (e.g., comparing two runs side-by-side), a Jinja2 renderer can be added under `tests/ci_assets/` without having to retrofit anything in the workflow.
 
 ### Retention and Naming
 
