@@ -42,3 +42,7 @@ uv run pytest --cov --cov-branch --cov-fail-under=100
 ```
 
 Run it locally before each commit and again immediately before opening or updating a PR.
+
+## CI
+
+The same four-command gate runs in GitHub Actions on every push and pull request (`.github/workflows/gate.yml`, Linux + macOS), per [CI_PLAN.md](CI_PLAN.md) -- the same bar from a clean machine, with `-m "not container"` deselecting tier 3. The `uv` version CI runs is pinned in `.uv-version`. CI is the second eye, not a substitute: run the gate locally before pushing.

@@ -1,0 +1,88 @@
+/* admt dark theme for coverage.py's HTML report (CI_PLAN.md §Themed Coverage HTML).
+ *
+ * Wired in via [tool.coverage.html] extra_css in pyproject.toml, which links it
+ * after coverage's own style.css -- so equal-specificity rules here win by
+ * source order over both the default light palette and its
+ * prefers-color-scheme dark variant, and the report renders identically for
+ * every viewer.
+ *
+ * Palette: #1a1a1a base, #e0e0e0 text, #CFB87C (admt's signature gold) for the
+ * coverage badge, link hover states, and pass markers; red for uncovered lines
+ * and branches so they contrast cleanly with the gold-pass motif.
+ */
+
+/* Base */
+body { background: #1a1a1a; color: #e0e0e0; }
+header { background: #141414; border-bottom: 1px solid #333333; }
+header p.text { color: #999999; }
+footer .content { color: #888888; }
+
+/* Links: near-text at rest, gold on hover/focus */
+a { color: #e0e0e0; }
+a:hover, a.nav:hover { color: #cfb87c; }
+a:active, a:focus { outline: 2px dashed #cfb87c; }
+
+/* The coverage badge -- the headline percentage */
+.pc_cov { color: #cfb87c; font-weight: bold; }
+
+/* Header buttons (files / functions / classes views) */
+header h2 a.button { background: #262626; border-color: #3a3a3a; color: #e0e0e0; }
+header h2 a.button.current { background: #1a1a1a; border-color: #cfb87c; }
+
+/* Filter box */
+#filter_container #filter { background: #111111; color: #e0e0e0; border-color: #3a3a3a; }
+#filter_container #filter:focus { border-color: #cfb87c; }
+#filter_container label { color: #999999; }
+
+/* Keyboard-shortcut help panel and annotations */
+#help_panel, #source p .annotate.long {
+  background: #262626;
+  border-color: #555555;
+  color: #e0e0e0;
+}
+kbd { background: #262626; border-color: #555555 #333333 #333333 #555555; color: #e0e0e0; }
+
+/* Index table */
+#index td, #index th { border-color: #2a2a2a; }
+#index th { color: #cccccc; border-color: #3a3a3a; }
+#index th:hover { background: #262626; }
+#index tr.region:hover, #index tr.file:hover { background: #232323; }
+#index tr.total td, #index tr.total th { border-top: 1px solid #cfb87c; }
+
+/* Source view: plain lines blend into the page */
+#source p .t { border-color: #1a1a1a; }
+#source p .t:hover { background: #262626; }
+#source p .n, #source p .n a { color: #666666; }
+#source p .n.highlight, #source p .n a.highlight { background: #3a3219; }
+
+/* Covered lines -- the pass marker is admt gold */
+#source p.run .t { border-left: 0.2em solid #cfb87c; }
+#source p.run.show_run .t { background: #2b2718; }
+#source p.run.show_run .t:hover { background: #383219; }
+#source p.run.run2 .t { border-left: 0.2em dotted #cfb87c; }
+#source p.run.run2.show_run .t { background: #242112; }
+#source p.run.run2.show_run .t:hover { background: #383219; }
+
+/* Uncovered lines -- red */
+#source p.mis .t { border-left: 0.2em solid #e05555; }
+#source p.mis.show_mis .t { background: #4b1818; }
+#source p.mis.show_mis .t:hover { background: #5a2323; }
+#source p.mis.mis2 .t { border-left: 0.2em dotted #e05555; }
+#source p.mis.mis2.show_mis .t { background: #3a1616; }
+#source p.mis.mis2.show_mis .t:hover { background: #5a2323; }
+
+/* Partially-covered branches -- red, dashed to distinguish from missed lines */
+#source p.par .t { border-left: 0.2em dashed #e05555; }
+#source p.par.show_par .t { background: #45201b; }
+#source p.par.show_par .t:hover { background: #542a22; }
+#source p.par.par2 .t { border-left: 0.2em dotted #e05555; }
+#source p.par.par2.show_par .t { background: #3a1c18; }
+#source p.par.par2.show_par .t:hover { background: #542a22; }
+
+/* Syntax tokens tuned for the dark base */
+#source p .t .com { color: #8fa876; }
+#source p .t .str, #source p .t .fst { color: #9cc3e0; }
+
+/* Scroll minimap on source pages */
+#scroll_marker { background: #141414; border-color: #333333; }
+#scroll_marker .marker { background: #4a4a4a; }

@@ -10,3 +10,6 @@ htmlcov/
 .coverage
 *.egg-info/
 .claude/
+gate-junit.xml
+coverage.xml
+_artifacts/

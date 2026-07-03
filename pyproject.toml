@@ -146,3 +146,6 @@ exclude_lines = [
     "raise NotImplementedError",
     "if TYPE_CHECKING:",
 ]
+
+[tool.coverage.html]
+extra_css = "tests/ci_assets/admt-dark.css"
