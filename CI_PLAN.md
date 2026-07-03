@@ -20,7 +20,7 @@ This plan is the spec for admt's CI -- the workflow files under `.github/workflo
 - [Workflow: upstream.yml (Roadmap)](#workflow-upstreamyml-roadmap)
 - [Tier 3 Fixture Strategy](#tier-3-fixture-strategy)
 - [Per-Command Coverage Matrix](#per-command-coverage-matrix)
-- [Architectural Self-Audit](#architectural-self-audit)
+- [Architectural Enforcement](#architectural-enforcement)
 - [Artifacts and Provenance](#artifacts-and-provenance)
 - [Toolchain Pinning](#toolchain-pinning)
 - [Implementation Order](#implementation-order)
@@ -53,7 +53,7 @@ This list is also the test plan for whether CI is doing its job. If a future dri
 - **The four-command quality gate**, run on every push and every pull request, on Linux and macOS. The gate is the same gate developers run locally; CI is the second eye, not a different bar.
 - **Tier 3 container tests**, run on every non-draft pull request and every push to `main`. Tier 3 is the spec-conformance backstop named in [TEST_PLAN.md §Tier 3](TEST_PLAN.md#tier-3-container-tests).
 - **Per-command, per-flag, per-alias coverage** -- every concrete `Command` subclass, every short alias (`e`, `b`, `t`, `s`, `an`, `cl`, `p`, `cov`, `pub`, `w`, `tmpl`), and every global flag and env variable in [TEST_PLAN.md §What to Test](TEST_PLAN.md#what-to-test) is exercised at the appropriate tier.
-- **Architectural enforcement** -- `tests/unit/test_architecture.py` (per [TEST_PLAN.md §Architectural Enforcement Tests](TEST_PLAN.md#architectural-enforcement-tests)) enforces the layering, `Command` metadata, and CLI↔Command parity rules. A per-command-right-tier self-audit is **deferred** -- the coverage gate already forces every command to be tested (see [Architectural Self-Audit](#architectural-self-audit)).
+- **Architectural enforcement** -- `tests/unit/test_architecture.py` (per [TEST_PLAN.md §Architectural Enforcement Tests](TEST_PLAN.md#architectural-enforcement-tests)) enforces the layering, `Command` metadata, and CLI↔Command parity rules.
 - **Local rehearsal via a host script** -- tier-3 workflow logic is exposed as `tests/container/run.sh`, the single entry point CI invokes and developers run locally, so the test logic is rehearsable on any host with Docker without a separate local Actions runner.
 - **Toolchain pinning** for `uv`, the Python interpreter, the Adamant container image, and any GitHub Actions third-party action versions.
 - **Failure forensics** -- every failure produces an artifact bundle with provenance metadata (commit SHA, run ID, branch, OS) and human-navigable HTML reports.
@@ -105,7 +105,7 @@ Tier 3 catches the spec-vs-implementation drift the local gate cannot. It must r
 
 ### CI4. Every Command, Every Flag, Every Alias
 
-Tier 3 exercises every concrete `Command` subclass, every short alias, and every global flag listed in [TEST_PLAN.md §What to Test](TEST_PLAN.md#what-to-test). Covering that surface is the tier-3 suite's own responsibility, backstopped by the 100% coverage gate and `test_architecture.py`'s command/CLI-parity test. A dedicated per-command-right-tier introspection audit that would mechanically enforce the mapping is **deferred** (see [Architectural Self-Audit](#architectural-self-audit)).
+Tier 3 exercises every concrete `Command` subclass, every short alias, and every global flag listed in [TEST_PLAN.md §What to Test](TEST_PLAN.md#what-to-test). Covering that surface is the tier-3 suite's own responsibility, backstopped by the 100% coverage gate and `test_architecture.py`'s command/CLI-parity test.
 
 ### CI5. Local-Rehearsable via a Host Script
 
@@ -591,11 +591,9 @@ The 24 concrete commands (see [ARCHITECTURE.md §Command Reference](ARCHITECTURE
 
 ---
 
-## Architectural Self-Audit
+## Architectural Enforcement
 
 Architectural enforcement lives in `tests/unit/test_architecture.py` (see [TEST_PLAN.md §Architectural Enforcement Tests](TEST_PLAN.md#architectural-enforcement-tests)): it asserts the import/dependency rules, the `Command` metadata contract, CLI↔Command parity (every `Command` has a Click entry and vice versa), the `cli.py` size cap, and the no-circular-imports rule. This plan relies on it as the architectural baseline; the gate runs it like any other tier-1 test.
-
-A per-command-*right-tier* audit (asserting each command/alias/flag has a test at each tier) is **not a CI concern** and is deferred indefinitely. The 100% line + branch coverage gate ([CI2](#ci2-the-coverage-threshold-is-hard)) already forces every command to be exercised by some test, and `test_architecture.py` enforces the structural contract; together they answer "is each command tested" without runtime-introspection machinery. An implementer may spot-check tier placement by hand during a change; CI does not.
 
 ---
 
