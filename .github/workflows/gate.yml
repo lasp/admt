@@ -130,6 +130,7 @@ jobs:
         with:
           name: gate-${{ matrix.os }}-${{ github.sha }}
           path: _artifacts/
+          retention-days: 14
 
       # CI_PLAN.md §Wheel build (every run) -- packaging and entry-point
       # breakage surfaces in the gate, not first at release. Ubuntu leg only.
@@ -143,6 +144,7 @@ jobs:
         with:
           name: gate-wheel-${{ github.sha }}
           path: dist/
+          retention-days: 14
 
       # CI8 -- tabular run summary: gate command results, coverage %, and a
       # link to the artifact bundle.

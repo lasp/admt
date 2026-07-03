@@ -684,7 +684,7 @@ The output lands in `_artifacts/gate/htmlcov/`. After downloading the artifact z
 
 ### Retention and Naming
 
-Artifact name: `<workflow>-<leg>-<sha>` (e.g., `gate-ubuntu-24.04-c0ffee1`). Stable enough to link from a PR comment; the `${{ github.sha }}` namespace prevents clashes across runs and the matrix-leg key prevents clashes within one. Retention: 14 days (default for `actions/upload-artifact@v4`). Long enough to debug a failed run a few days later; short enough to not balloon storage.
+Artifact name: `<workflow>-<leg>-<sha>` (e.g., `gate-ubuntu-24.04-c0ffee1`). Stable enough to link from a PR comment; the `${{ github.sha }}` namespace prevents clashes across runs and the matrix-leg key prevents clashes within one. Retention: 14 days, set explicitly via `retention-days` on each upload step (`actions/upload-artifact@v4` otherwise inherits the repository default). Long enough to debug a failed run a few days later; short enough to not balloon storage.
 
 ---
 
