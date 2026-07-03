@@ -72,7 +72,7 @@ mypy src/
 pytest --cov --cov-branch --cov-fail-under=100
 ```
 
-This is the **non-negotiable bar**. A PR is not ready unless all four succeed. There is no CI pipeline yet -- the local run is the gate. When the CI pipeline lands ([ROADMAP.md](ROADMAP.md)), the same four commands will run in GitHub Actions -- the same bar, from a clean machine.
+This is the **non-negotiable bar**. A PR is not ready unless all four succeed. The same four commands run in GitHub Actions on every push and pull request ([CI_PLAN.md](CI_PLAN.md)) -- the same bar, from a clean machine. The local run is the first gate; CI is the second eye, not a substitute.
 
 `pytest --cov --cov-fail-under=100` enforces the 100% coverage threshold from [Coverage](#coverage); it is part of the gate, not an optional extra.
 

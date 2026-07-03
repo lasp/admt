@@ -4,7 +4,7 @@ Capabilities that are not yet built. The architecture ([ARCHITECTURE.md](ARCHITE
 
 ## Next Up: CI Pipeline and Packaging
 
-- **CI pipeline (GitHub Actions):** the same four commands as the [quality gate](TEST_PLAN.md#quality-gate) (`ruff format --check`, `ruff check`, `mypy src/`, `pytest --cov --cov-branch --cov-fail-under=100`) run on every push. Container smoke tests on PR merge. The workflow is structured so that developers and agents can rehearse it locally with [`act`](https://github.com/nektos/act) before pushing -- no surprises at the PR boundary.
+- **CI pipeline, remaining tiers ([CI_PLAN.md](CI_PLAN.md)):** the tier-3 container suite and its `container.yml` workflow, then `release.yml` (PyPI publish) -- each behind its own plan and review. The four-command [quality gate](TEST_PLAN.md#quality-gate) runs in GitHub Actions on every push and pull request (`gate.yml`).
 - **Documentation and packaging:** shell completion setup scripts, publishable package.
 - **Upstream contract tests:** weekly verification of `docker compose` output format, `redo what` output format, compose file structure.
 
