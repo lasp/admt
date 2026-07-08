@@ -219,7 +219,7 @@ strategy:
 5. **Run gate command 2**: `uv run ruff check src/ tests/`.
 6. **Run gate command 3**: `uv run mypy src/`.
 7. **Run gate command 4**: `uv run pytest --cov --cov-branch --cov-fail-under=100 --junitxml=gate-junit.xml -m "not container"`.
-8. **Generate themed coverage HTML** (always) -- `uv run coverage html --extra-css tests/ci_assets/admt-dark.css --title "admt coverage @ ${SHORT_SHA}"`.
+8. **Generate themed coverage HTML** (always) -- `uv run coverage html --title "admt coverage @ ${SHORT_SHA}"`, themed via the `[tool.coverage.html] extra_css` setting in `pyproject.toml` (see [Themed Coverage HTML](#themed-coverage-html)).
 9. **Surface per-test results** (always) -- `mikepenz/action-junit-report` posts the JUnit XML as a check-run (see [Artifacts and Provenance](#artifacts-and-provenance)).
 10. **Upload artifact bundle** (always) -- `actions/upload-artifact@v4` with everything in `_artifacts/` (coverage HTML, coverage XML, JUnit XML, log tail). Name: `gate-${{ matrix.os }}-${{ github.sha }}`.
 11. **Post step summary** (always) -- a tabular summary on `$GITHUB_STEP_SUMMARY` with gate command results, coverage %, and a link to the artifact.
@@ -238,7 +238,10 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
+      checks: write
 ```
+
+`checks: write` is the one grant beyond read: the per-test check-run POST ([CI8](#ci8-failure-is-self-diagnostic)) writes to the Checks API.
 
 ### Docker-free gate
 
@@ -613,7 +616,7 @@ _artifacts/
   gate/
     gate-junit.xml        # tier 1 + tier 2 (all of pytest, including the audits)
     coverage.xml          # Cobertura format
-    htmlcov/              # coverage.py's HTML report, themed via --extra-css
+    htmlcov/              # coverage.py's HTML report, themed via extra_css
       index.html
       ...
 
@@ -659,12 +662,16 @@ Each workflow's pytest step writes JUnit XML; a follow-up step posts that XML as
 
 ### Themed Coverage HTML
 
-`coverage.py`'s native HTML reporter accepts `--extra-css` and `--title`:
+`coverage.py`'s native HTML reporter takes an extra stylesheet from the `[tool.coverage.html] extra_css` setting in `pyproject.toml` and a title from `--title`:
+
+```toml
+# pyproject.toml
+[tool.coverage.html]
+extra_css = "tests/ci_assets/admt-dark.css"
+```
 
 ```bash
-uv run coverage html \
-  --extra-css tests/ci_assets/admt-dark.css \
-  --title "admt coverage @ ${SHORT_SHA}"
+uv run coverage html --title "admt coverage @ ${SHORT_SHA}"
 ```
 
 `tests/ci_assets/admt-dark.css` is a small CSS file (~100 lines) that:
@@ -677,7 +684,7 @@ The output lands in `_artifacts/gate/htmlcov/`. After downloading the artifact z
 
 ### Retention and Naming
 
-Artifact name: `<workflow>-<leg>-<sha>` (e.g., `gate-ubuntu-24.04-c0ffee1`). Stable enough to link from a PR comment; the `${{ github.sha }}` namespace prevents clashes across runs and the matrix-leg key prevents clashes within one. Retention: 14 days (default for `actions/upload-artifact@v4`). Long enough to debug a failed run a few days later; short enough to not balloon storage.
+Artifact name: `<workflow>-<leg>-<sha>` (e.g., `gate-ubuntu-24.04-c0ffee1`). Stable enough to link from a PR comment; the `${{ github.sha }}` namespace prevents clashes across runs and the matrix-leg key prevents clashes within one. Retention: 14 days, set explicitly via `retention-days` on each upload step (`actions/upload-artifact@v4` otherwise inherits the repository default). Long enough to debug a failed run a few days later; short enough to not balloon storage.
 
 ---
 
@@ -835,7 +842,7 @@ The initial CI surface is deliberately small: the four-command gate (`gate.yml`)
 
 | Workflow | `push:main` | `pull_request:open/sync/reopen` | `pull_request:ready_for_review` | `release:published` | `schedule` | `workflow_dispatch` | Permissions |
 |---|---|---|---|---|---|---|---|
-| `gate.yml` | run | run | -- | -- | -- | run | `contents:read` |
+| `gate.yml` | run | run | -- | -- | -- | run | `contents:read`, `checks:write` |
 | `container.yml` | run | run if non-draft | run | -- | -- | run | `contents:read`, `packages:read` |
 | `release.yml` | -- | -- | -- | run | -- | run | `contents:write`, `id-token:write`, `attestations:write` |
 | `upstream.yml` | -- | -- | -- | -- | run (weekly) | run | `contents:read`, `packages:read`, `issues:write` |

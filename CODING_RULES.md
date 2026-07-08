@@ -400,7 +400,7 @@ The recurring failure mode is **uv-version drift**: when a developer's local `uv
 - **Bump `uv.lock` only when dependencies in `pyproject.toml` change** -- a real version bump, a new dep added, a dep removed. Those changes ride together with the lockfile diff in one commit.
 - **Mechanical lockfile churn must be reverted before committing unrelated work.** Standard playbook: when staging a feature change, if `git status` shows `M uv.lock` but you didn't touch `pyproject.toml`, run `git checkout uv.lock` before adding your feature files. The format-only diff doesn't ride along.
 - **Lockfile-format refreshes ship as their own commit/PR.** Title: `chore: refresh uv.lock format under uv X.Y.Z`. One-line body explaining what changed. Reviewer can scan the diff once and confirm it's purely mechanical.
-- **CI pins the uv version** (once the CI pipeline lands; see ROADMAP.md) so CI rewrites are deterministic and don't ping-pong against contributors running a slightly different version locally.
+- **CI pins the uv version** (`.uv-version`, read by the gate workflow; see [CI_PLAN.md](CI_PLAN.md)) so CI rewrites are deterministic and don't ping-pong against contributors running a slightly different version locally.
 
 ---
 

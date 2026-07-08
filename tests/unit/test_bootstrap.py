@@ -64,7 +64,19 @@ def test_build_context_noninteractive_any_other_value_evaluates_on(monkeypatch, 
     assert ctx.noninteractive is True
 
 
-def test_build_container_service_returns_container_and_mapper_tuple():
+@pytest.fixture
+def docker_on_path(monkeypatch):
+    """Pin the adapter's compose-command discovery to a hit.
+
+    ``DockerAdapter`` defaults ``compose_cmd`` via a ``shutil.which`` PATH
+    probe; pinning it keeps these tests hermetic on machines without a
+    docker CLI -- the gate must not require one (CI_PLAN.md §Docker-free
+    gate).
+    """
+    monkeypatch.setattr("admt.adapters.docker.shutil.which", lambda name: f"/usr/bin/{name}")
+
+
+def test_build_container_service_returns_container_and_mapper_tuple(docker_on_path):
     """Returns (ContainerService, PathMapperService) explicitly.
 
     Replaces the previous side-effect form where the function mutated
@@ -81,7 +93,7 @@ def test_build_container_service_returns_container_and_mapper_tuple():
     fake_ctx.config_service.get_active_project.assert_called_once()
 
 
-def test_build_container_service_does_not_mutate_context():
+def test_build_container_service_does_not_mutate_context(docker_on_path):
     """Regression: confirm the function no longer touches ``context.path_mapper``."""
     fake_ctx = MagicMock()
     fake_ctx.config_service.get_active_project.return_value = _project()

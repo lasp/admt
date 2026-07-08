@@ -1,0 +1,171 @@
+# The four-command quality gate in CI (Tier 1+2).
+#
+# Implements CI_PLAN.md §Workflow: gate.yml -- requirements CI1 (same gate,
+# clean machine), CI2 (hard coverage threshold), CI6 (toolchain pinning),
+# CI7 (no bypass), CI8 (self-diagnostic failure), CI9 (spec traceability).
+# The gate commands are TEST_PLAN.md §Quality Gate verbatim, plus the two
+# deviations CI_PLAN.md specifies: `-m "not container"` (tier 3 runs in its
+# own workflow; CI1) and `--junitxml` (per-test check rendering; CI8).
+
+name: gate
+
+# CI_PLAN.md §Workflow: gate.yml §Triggers -- every push to main, every PR
+# (drafts included; CI7), and manual dispatch.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+# CI_PLAN.md §Workflow Architecture §Concurrency -- a force-push cancels the
+# in-flight run for the same ref; other refs are unaffected.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# CI_PLAN.md §Workflow Architecture §Default Shell -- no surprises from a
+# runner's shell init files; failures propagate immediately.
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
+
+jobs:
+  gate:
+    # CI_PLAN.md §Workflow: gate.yml §Job-Level Configuration. `checks: write`
+    # is required by the JUnit check-run POST (the CI8 per-test rendering).
+    name: gate (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      checks: write
+    # §Matrix -- Linux + macOS per CODING_RULES.md §Language and Runtime;
+    # fail-fast off so one OS's failure doesn't hide the other's.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      # CI6 -- the uv pin is read from its single source at runtime.
+      - name: Read the uv pin
+        run: echo "UV_VERSION=$(cat .uv-version)" >> "$GITHUB_ENV"
+
+      # The action reads .python-version natively; uv installs the pinned
+      # interpreter during sync (CI6).
+      - name: Set up uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e  # v6.8.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+
+      # --frozen so CI can never rewrite the lockfile
+      # (CODING_RULES.md §uv.lock policy).
+      - name: Sync dependencies
+        run: uv sync --dev --frozen
+
+      # The four gate commands -- TEST_PLAN.md §Quality Gate (CI1).
+      - name: Gate 1 -- ruff format
+        id: fmt
+        run: uv run ruff format --check src/ tests/
+
+      - name: Gate 2 -- ruff check
+        id: lint
+        run: uv run ruff check src/ tests/
+
+      - name: Gate 3 -- mypy
+        id: types
+        run: uv run mypy src/
+
+      # CI2 -- the 100% line + branch threshold is hard.
+      - name: Gate 4 -- pytest
+        id: tests
+        run: >-
+          uv run pytest --cov --cov-branch --cov-fail-under=100
+          --junitxml=gate-junit.xml -m "not container"
+
+      # CI8 -- themed coverage HTML + Cobertura XML, built from whatever
+      # coverage data the pytest step produced (also on a failed run). The
+      # admt-dark.css theme is wired via [tool.coverage.html] extra_css in
+      # pyproject.toml (CI_PLAN.md §Themed Coverage HTML).
+      - name: Generate coverage reports
+        if: ${{ always() }}
+        run: |
+          if [[ -f .coverage ]]; then
+            SHORT_SHA="${GITHUB_SHA::7}"
+            uv run coverage html --title "admt coverage @ ${SHORT_SHA}"
+            uv run coverage xml
+          fi
+
+      # CI8 -- per-test pass/fail on the PR Checks tab, straight from JUnit.
+      - name: Surface per-test results in PR check view
+        if: ${{ always() }}
+        uses: mikepenz/action-junit-report@db71d41eb79864e25ab0337e395c352e84523afe  # v4.3.1
+        with:
+          report_paths: gate-junit.xml
+          detailed_summary: true
+          check_name: "gate (per-test, ${{ matrix.os }})"
+
+      # CI_PLAN.md §Bundle Layout --
+      # _artifacts/gate/{gate-junit.xml, coverage.xml, htmlcov/}.
+      - name: Assemble artifact bundle
+        if: ${{ always() }}
+        run: |
+          mkdir -p _artifacts/gate
+          for f in gate-junit.xml coverage.xml; do
+            if [[ -f "$f" ]]; then mv "$f" _artifacts/gate/; fi
+          done
+          if [[ -d htmlcov ]]; then mv htmlcov _artifacts/gate/htmlcov; fi
+
+      # CI8 -- artifact naming and retention per §Retention and Naming.
+      - name: Upload artifact bundle
+        id: upload
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-${{ matrix.os }}-${{ github.sha }}
+          path: _artifacts/
+          retention-days: 14
+
+      # CI_PLAN.md §Wheel build (every run) -- packaging and entry-point
+      # breakage surfaces in the gate, not first at release. Ubuntu leg only.
+      - name: Build wheel
+        if: ${{ success() && matrix.os == 'ubuntu-24.04' }}
+        run: uv build
+
+      - name: Upload wheel
+        if: ${{ success() && matrix.os == 'ubuntu-24.04' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-wheel-${{ github.sha }}
+          path: dist/
+          retention-days: 14
+
+      # CI8 -- tabular run summary: gate command results, coverage %, and a
+      # link to the artifact bundle.
+      - name: Post step summary
+        if: ${{ always() }}
+        run: |
+          coverage_total="n/a"
+          if [[ -f .coverage ]]; then
+            coverage_total="$(uv run coverage report --format=total)%"
+          fi
+          {
+            echo "### gate (${{ matrix.os }})"
+            echo ""
+            echo "| Gate command | Result |"
+            echo "|---|---|"
+            echo "| \`ruff format --check src/ tests/\` | ${{ steps.fmt.outcome }} |"
+            echo "| \`ruff check src/ tests/\` | ${{ steps.lint.outcome }} |"
+            echo "| \`mypy src/\` | ${{ steps.types.outcome }} |"
+            echo "| \`pytest --cov --cov-branch --cov-fail-under=100\` | ${{ steps.tests.outcome }} |"
+            echo ""
+            echo "Coverage: ${coverage_total}"
+            echo ""
+            echo "Artifact bundle: ${{ steps.upload.outputs.artifact-url }}"
+          } >> "$GITHUB_STEP_SUMMARY"
