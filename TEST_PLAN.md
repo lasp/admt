@@ -680,7 +680,12 @@ Covering the [Compose Parsing](ARCHITECTURE.md#compose-parsing) and [Active Proj
 | `env use` writes both | Session entry for this TTY **and** global `active_project` updated |
 | New terminal (different TTY) | No session entry; falls back to global = last used |
 | Stale entry (`getsid` mismatch) | Ignored and pruned; falls back to global |
-| No controlling TTY (piped / `ADMT_NONINTERACTIVE`) | Session layer skipped; uses `ADMT_ENV` then global |
+| No controlling TTY, no `ADMT_SESSION_KEY` | Session layer skipped; uses `ADMT_ENV` then global |
+| No TTY + `ADMT_SESSION_KEY` set | Pin held under `session:<key>`; survives another session's `env use` |
+| TTY present + `ADMT_SESSION_KEY` set | TTY wins; no keyed entry is written |
+| Keyed entry idle past the prune window | Ignored and pruned; falls back to global, then re-pins |
+| Keyed entry resolved within the window | Honored, and its last-used stamp refreshes (throttled) |
+| Two headless sessions, distinct keys | Each holds its own pin while the global moves |
 | `env status` source | Reports active project **and** its source (`ADMT_ENV` / this terminal / global) |
 | Two worktrees, two TTYs (tier 3) | `env use wt1` in one terminal and `wt2` in another target distinct containers concurrently |
 

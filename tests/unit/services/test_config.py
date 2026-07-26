@@ -24,7 +24,9 @@ from admt.services.config import (
     ActiveSource,
     ConfigService,
     ProjectConfig,
+    _current_session_key,
     _current_terminal,
+    _entry_alive,
     _session_alive,
 )
 from admt.services.output import OutputService
@@ -1064,9 +1066,9 @@ def test_register_project_pins_registering_terminal(tmp_path, monkeypatch):
 def test_write_session_failure_warns_and_does_not_raise(tmp_path, monkeypatch, capsys):
     """An unwritable session store must not break the command (review: PR #27).
 
-    The pin write runs on every resolution in an unpinned terminal, so a raw
+    The pin write runs on every resolution in an unpinned session, so a raw
     write error here would brick every command. Degrade to a warning; the
-    terminal then follows the global default.
+    session then follows the global default.
     """
     monkeypatch.delenv("ADMT_ENV", raising=False)
     svc = _registered(tmp_path)
@@ -1075,7 +1077,7 @@ def test_write_session_failure_warns_and_does_not_raise(tmp_path, monkeypatch, c
     monkeypatch.setattr(svc._yaml, "dump", _raise_config_error(msg))
     svc.set_active_project("myproj")  # must not raise
     captured = capsys.readouterr()
-    assert "Could not save the terminal's active-project pin" in captured.err
+    assert "Could not save the session's active-project pin" in captured.err
     assert "follow the global default" in captured.err
     # Resolution still works via the global default (the documented fallback).
     assert svc.get_active_project().name == "myproj"
@@ -1086,6 +1088,212 @@ def _raise_config_error(msg):
         raise ConfigError(msg)
 
     return _raise
+
+
+# ----- ADMT_SESSION_KEY sessions (tty-less callers) -----
+
+
+@pytest.fixture
+def _headless(monkeypatch):
+    """No controlling terminal and no ADMT_ENV -- the agent/CI shape."""
+    monkeypatch.delenv("ADMT_ENV", raising=False)
+    monkeypatch.delenv("ADMT_SESSION_KEY", raising=False)
+    monkeypatch.setattr(config_mod, "_current_terminal", lambda: None)
+
+
+def _keyed_entry(svc, key):
+    return svc._load_sessions().get(f"session:{key}", {})
+
+
+@pytest.mark.usefixtures("_headless")
+def test_current_session_key_none_without_env():
+    assert _current_session_key() is None
+
+
+@pytest.mark.usefixtures("_headless")
+def test_current_session_key_prefixes_env_value(monkeypatch):
+    monkeypatch.setenv("ADMT_SESSION_KEY", "agent-7")
+    assert _current_session_key() == "session:agent-7"
+
+
+@pytest.mark.usefixtures("_headless")
+def test_current_session_key_none_when_empty(monkeypatch):
+    monkeypatch.setenv("ADMT_SESSION_KEY", "")
+    assert _current_session_key() is None
+
+
+def test_current_session_key_none_when_terminal_present(monkeypatch):
+    """A controlling tty outranks the variable -- interactive shells stay tty-keyed."""
+    monkeypatch.setenv("ADMT_SESSION_KEY", "agent-7")
+    monkeypatch.setattr(config_mod, "_current_terminal", lambda: ("/dev/ttysK", 11))
+    assert _current_session_key() is None
+
+
+@pytest.mark.usefixtures("_headless")
+def test_keyed_session_pin_overrides_global(tmp_path, monkeypatch):
+    svc = _two_projects(tmp_path)  # global = projb
+    monkeypatch.setenv("ADMT_SESSION_KEY", "agent-7")
+    svc.set_active_project("proja")
+    assert svc.load().active_project == "proja"
+    assert _keyed_entry(svc, "agent-7")["project"] == "proja"
+    # Another session moves the global; this session must not follow it.
+    svc.save(_with_global(svc, "projb"))
+    assert svc.get_active_project().name == "proja"
+    assert svc.get_active_source() == ActiveSource.KEY_SESSION
+
+
+@pytest.mark.usefixtures("_headless")
+def test_admt_env_overrides_keyed_session(tmp_path, monkeypatch):
+    svc = _two_projects(tmp_path)
+    monkeypatch.setenv("ADMT_SESSION_KEY", "agent-7")
+    svc.set_active_project("proja")
+    monkeypatch.setenv("ADMT_ENV", "projb")
+    assert svc.get_active_source() == ActiveSource.ENV_OVERRIDE
+    assert svc.get_active_project().name == "projb"
+
+
+def test_terminal_pin_wins_over_keyed_entry(tmp_path, monkeypatch):
+    """With a tty present, a keyed entry for the same store is never consulted."""
+    monkeypatch.delenv("ADMT_ENV", raising=False)
+    svc = _two_projects(tmp_path)
+    monkeypatch.setenv("ADMT_SESSION_KEY", "agent-7")
+    # Seed a keyed pin from a headless context...
+    monkeypatch.setattr(config_mod, "_current_terminal", lambda: None)
+    svc.set_active_project("proja")
+    # ...then resolve from a terminal that pins elsewhere.
+    monkeypatch.setattr(config_mod, "_current_terminal", lambda: ("/dev/ttysK", os.getpid()))
+    svc.set_active_project("projb")
+    assert svc.get_active_source() == ActiveSource.SESSION
+    assert svc.get_active_project().name == "projb"
+
+
+@pytest.mark.usefixtures("_headless")
+def test_keyed_auto_pin_on_global_resolution(tmp_path, monkeypatch):
+    """Parity with terminals: showing the project commits the session to it."""
+    svc = _registered(tmp_path)  # global = myproj
+    monkeypatch.setenv("ADMT_SESSION_KEY", "agent-7")
+    assert svc.resolved_active_name() == "myproj"
+    assert _keyed_entry(svc, "agent-7")["project"] == "myproj"
+
+
+@pytest.mark.usefixtures("_headless")
+def test_keyed_entry_idle_past_window_falls_back_to_global(tmp_path, monkeypatch):
+    svc = _two_projects(tmp_path)
+    monkeypatch.setenv("ADMT_SESSION_KEY", "agent-7")
+    svc.set_active_project("proja")
+    svc.save(_with_global(svc, "projb"))  # another session moves the global
+    # Jump past the idle window: the pin is no longer honored.
+    _advance_clock(monkeypatch, config_mod._KEYED_MAX_IDLE_SECS + 1)
+    assert svc.get_active_source() == ActiveSource.GLOBAL
+    assert svc.get_active_project().name == "projb"
+
+
+@pytest.mark.usefixtures("_headless")
+def test_expired_keyed_entry_is_pruned_and_repinned(tmp_path, monkeypatch):
+    svc = _registered(tmp_path)
+    monkeypatch.setenv("ADMT_SESSION_KEY", "agent-7")
+    svc.set_active_project("myproj")
+    _advance_clock(monkeypatch, config_mod._KEYED_MAX_IDLE_SECS + 1)
+    # The fall-through auto-pin rewrites the entry with a fresh stamp.
+    assert svc.resolved_active_name() == "myproj"
+    assert _keyed_entry(svc, "agent-7")["written"] == int(config_mod.time.time())
+
+
+@pytest.mark.usefixtures("_headless")
+def test_resolving_keyed_pin_refreshes_its_stamp(tmp_path, monkeypatch):
+    """Touch-on-read: an actively-resolving session never ages out."""
+    svc = _registered(tmp_path)
+    monkeypatch.setenv("ADMT_SESSION_KEY", "agent-7")
+    svc.set_active_project("myproj")
+    first = _keyed_entry(svc, "agent-7")["written"]
+    _advance_clock(monkeypatch, config_mod._KEYED_TOUCH_INTERVAL_SECS + 1)
+    assert svc.resolved_active_name() == "myproj"
+    assert _keyed_entry(svc, "agent-7")["written"] > first
+
+
+@pytest.mark.usefixtures("_headless")
+def test_keyed_pin_stamp_not_rewritten_within_throttle(tmp_path, monkeypatch):
+    """The refresh is throttled so concurrent sessions don't rewrite on every command."""
+    svc = _registered(tmp_path)
+    monkeypatch.setenv("ADMT_SESSION_KEY", "agent-7")
+    svc.set_active_project("myproj")
+    first = _keyed_entry(svc, "agent-7")["written"]
+    _advance_clock(monkeypatch, config_mod._KEYED_TOUCH_INTERVAL_SECS - 10)
+    assert svc.resolved_active_name() == "myproj"
+    assert _keyed_entry(svc, "agent-7")["written"] == first
+
+
+@pytest.mark.usefixtures("_headless")
+def test_keyed_entry_for_unregistered_project_falls_through(tmp_path, monkeypatch):
+    """A pin naming a since-removed project is ignored, not honored."""
+    svc = _two_projects(tmp_path)
+    monkeypatch.setenv("ADMT_SESSION_KEY", "agent-7")
+    svc.set_active_project("proja")
+    cfg = svc.load()
+    del cfg.projects["proja"]
+    cfg.active_project = "projb"
+    svc.save(cfg)
+    assert svc.get_active_source() == ActiveSource.GLOBAL
+    assert svc.get_active_project().name == "projb"
+
+
+@pytest.mark.usefixtures("_headless")
+def test_headless_without_session_key_follows_global(tmp_path, monkeypatch):
+    """Regression: a key-less headless caller behaves exactly as before."""
+    svc = _two_projects(tmp_path)  # global = projb
+    svc.set_active_project("proja")
+    assert not (tmp_path / ".admt" / "sessions.yml").exists()
+    svc.save(_with_global(svc, "projb"))
+    assert svc.get_active_source() == ActiveSource.GLOBAL
+    assert svc.get_active_project().name == "projb"
+
+
+@pytest.mark.usefixtures("_headless")
+def test_write_prunes_expired_keyed_entries_of_other_sessions(tmp_path, monkeypatch):
+    svc = _registered(tmp_path)
+    monkeypatch.setenv("ADMT_SESSION_KEY", "stale-agent")
+    svc.set_active_project("myproj")
+    _advance_clock(monkeypatch, config_mod._KEYED_MAX_IDLE_SECS + 1)
+    monkeypatch.setenv("ADMT_SESSION_KEY", "fresh-agent")
+    svc.set_active_project("myproj")
+    sessions = svc._load_sessions()
+    assert "session:stale-agent" not in sessions
+    assert "session:fresh-agent" in sessions
+
+
+@pytest.mark.parametrize(
+    ("entry", "expected"),
+    [
+        ("not-a-dict", False),
+        ({"project": "p"}, False),  # neither sid nor written
+        ({"project": "p", "written": "soon"}, False),  # malformed stamp
+        ({"project": "p", "written": 0}, False),  # epoch: long idle
+    ],
+)
+def test_entry_alive_rejects_malformed_entries(entry, expected):
+    assert _entry_alive(entry) is expected
+
+
+def test_entry_alive_accepts_fresh_keyed_entry():
+    assert _entry_alive({"project": "p", "written": int(config_mod.time.time())}) is True
+
+
+def test_entry_alive_delegates_sid_entries_to_session_alive():
+    assert _entry_alive({"project": "p", "sid": os.getpid()}) is True
+    assert _entry_alive({"project": "p", "sid": -1}) is False
+
+
+def _with_global(svc, name):
+    """Return the stored config with ``active_project`` moved to ``name``."""
+    cfg = svc.load()
+    cfg.active_project = name
+    return cfg
+
+
+def _advance_clock(monkeypatch, seconds):
+    """Shift ``config.time.time`` forward by ``seconds`` (no real sleeping)."""
+    base = config_mod.time.time()
+    monkeypatch.setattr(config_mod.time, "time", lambda: base + seconds)
 
 
 def test_write_session_prunes_closed_terminals(tmp_path, monkeypatch):

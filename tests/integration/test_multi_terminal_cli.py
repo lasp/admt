@@ -1,11 +1,12 @@
-"""Multi-terminal workflow tests through the real CLI.
+"""Multi-session workflow tests through the real CLI.
 
-The per-terminal session behavior regressed once because unit tests exercised
+The per-session behavior regressed once because unit tests exercised
 ``ConfigService`` directly while nothing replayed a real user workflow through
-the CLI across several terminals (a terminal that only ever ran ``env list``
+the CLI across several sessions (a terminal that only ever ran ``env list``
 followed every later ``env use`` from other terminals). These tests simulate
-terminals by patching ``admt.services.config._current_terminal`` and drive
-everything through ``CliRunner`` -- full arg parsing, command dispatch, and the
+terminals by patching ``admt.services.config._current_terminal`` -- and
+headless sessions by clearing it and setting ``ADMT_SESSION_KEY`` -- driving
+everything through ``CliRunner``: full arg parsing, command dispatch, and the
 real ConfigService against a synthetic ``~/.admt``.
 """
 
@@ -139,3 +140,75 @@ def test_admt_env_override_does_not_disturb_terminal_pin(tmp_path):
         assert _active_marker(result.output) == "wtb"  # override wins for this call
         result = runner.invoke(cli, ["env", "list"], env=_env(tmp_path))
         assert _active_marker(result.output) == "wta"  # pin untouched
+
+
+# ----- headless sessions (ADMT_SESSION_KEY) -----
+
+
+def _agent_env(tmp_path: Path, key: str) -> dict[str, str]:
+    """Env for a headless caller identifying itself with a session key."""
+    return {**_env(tmp_path), "ADMT_SESSION_KEY": key}
+
+
+def test_concurrent_headless_sessions_hold_their_own_pins(tmp_path):
+    """Two agents, two keys: neither `env use` retargets the other."""
+    runner = CliRunner()
+    root_a = _make_project(tmp_path, "wta")
+    root_b = _make_project(tmp_path, "wtb")
+    with _terminal(None):
+        assert runner.invoke(cli, ["env", "init", str(root_a)], env=_env(tmp_path)).exit_code == 0
+        assert runner.invoke(cli, ["env", "init", str(root_b)], env=_env(tmp_path)).exit_code == 0
+        # Agent one takes wta, agent two takes wtb (moving the global last).
+        assert (
+            runner.invoke(cli, ["env", "use", "wta"], env=_agent_env(tmp_path, "a1")).exit_code == 0
+        )
+        assert (
+            runner.invoke(cli, ["env", "use", "wtb"], env=_agent_env(tmp_path, "a2")).exit_code == 0
+        )
+        # Each agent still resolves to its own project.
+        result = runner.invoke(cli, ["env", "list"], env=_agent_env(tmp_path, "a1"))
+        assert _active_marker(result.output) == "wta"
+        result = runner.invoke(cli, ["env", "list"], env=_agent_env(tmp_path, "a2"))
+        assert _active_marker(result.output) == "wtb"
+        # A key-less headless caller follows the global (last `use` wins there).
+        result = runner.invoke(cli, ["env", "list"], env=_env(tmp_path))
+        assert _active_marker(result.output) == "wtb"
+
+
+def test_headless_session_reports_its_source(tmp_path):
+    runner = CliRunner()
+    root_a = _make_project(tmp_path, "wta")
+    with _terminal(None):
+        assert runner.invoke(cli, ["env", "init", str(root_a)], env=_env(tmp_path)).exit_code == 0
+        assert (
+            runner.invoke(cli, ["env", "use", "wta"], env=_agent_env(tmp_path, "a1")).exit_code == 0
+        )
+        result = runner.invoke(cli, ["env", "list"], env=_agent_env(tmp_path, "a1"))
+        assert _active_marker(result.output) == "wta"
+        assert "session:a1" in (tmp_path / ".admt" / "sessions.yml").read_text()
+
+
+def test_terminal_pin_unaffected_by_exported_session_key(tmp_path):
+    """A tty outranks the variable: an interactive shell stays tty-keyed."""
+    runner = CliRunner()
+    root_a = _make_project(tmp_path, "wta")
+    root_b = _make_project(tmp_path, "wtb")
+    with _terminal(None):
+        assert runner.invoke(cli, ["env", "init", str(root_a)], env=_env(tmp_path)).exit_code == 0
+        assert runner.invoke(cli, ["env", "init", str(root_b)], env=_env(tmp_path)).exit_code == 0
+    with _terminal("/dev/ttysA"):
+        env = _agent_env(tmp_path, "a1")
+        assert runner.invoke(cli, ["env", "use", "wta"], env=env).exit_code == 0
+        # The pin landed under the tty, not the key.
+        stored = (tmp_path / ".admt" / "sessions.yml").read_text()
+        assert "/dev/ttysA" in stored
+        assert "session:a1" not in stored
+    # A headless caller with that same key is unpinned -> follows the global.
+    with _terminal(None):
+        assert runner.invoke(cli, ["env", "use", "wtb"], env=_env(tmp_path)).exit_code == 0
+        result = runner.invoke(cli, ["env", "list"], env=_agent_env(tmp_path, "a1"))
+        assert _active_marker(result.output) == "wtb"
+    # The terminal keeps its own pin.
+    with _terminal("/dev/ttysA"):
+        result = runner.invoke(cli, ["env", "list"], env=_agent_env(tmp_path, "a1"))
+        assert _active_marker(result.output) == "wta"

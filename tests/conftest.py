@@ -24,6 +24,19 @@ for _info in pkgutil.walk_packages(admt.commands.__path__, prefix="admt.commands
     importlib.import_module(_info.name)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_session_key(monkeypatch):
+    """Drop an inherited ``ADMT_SESSION_KEY`` so the suite is hermetic.
+
+    The variable changes active-project resolution for tty-less processes --
+    exactly what a pytest run is -- so a value exported by the invoking
+    environment (an agent harness running the gate is the variable's primary
+    use case) would perturb every resolution-path test. Tests that exercise
+    the keyed session layer set it explicitly.
+    """
+    monkeypatch.delenv("ADMT_SESSION_KEY", raising=False)
+
+
 @pytest.fixture
 def make_context():
     """Return a factory that builds a Context with MagicMock services."""
