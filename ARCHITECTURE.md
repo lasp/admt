@@ -596,13 +596,16 @@ Both scripts are project-specific (keyed by project name in the path). When the 
 All passthrough commands accept an optional positional argument. The CLI adapter determines its meaning based on whether the resolved host path is a directory or not:
 
 - **Directory path** -> changes the working directory for the redo command (populates `Context.path`). The default redo target is used (e.g., `all` for build).
-- **File path or non-existent target name** -> passed as the redo target (populates `Context.target`); the working directory remains cwd. Only `admt build` forwards redo targets: on the fixed-target passthroughs (`what`, `test`, `style`, `analyze`, `clean`, `prove`, `coverage`, `publish`, `templates`) a non-directory positional is an argument error (exit 3) -- running the fixed target as if nothing was passed would silently ignore the argument. An **absolute** target is a host path and maps through the volume mounts exactly like directory arguments (exit 4 when under no mount); **relative** targets are forwarded verbatim and resolve against the mapped working directory.
+- **File path or non-existent target name** -> passed as a redo target (populates `Context.targets`); the working directory remains cwd. Only `admt build` forwards redo targets: on the fixed-target passthroughs (`what`, `test`, `style`, `analyze`, `clean`, `prove`, `coverage`, `publish`, `templates`) a non-directory positional is an argument error (exit 3) -- running the fixed target as if nothing was passed would silently ignore the argument. An **absolute** target is a host path and maps through the volume mounts exactly like directory arguments (exit 4 when under no mount); **relative** targets are forwarded verbatim and resolve against the mapped working directory.
+
+`admt build` accepts multiple positional targets, forwarded in order as one `redo <t1> <t2> ...` invocation (redo stops at the first failing target). A directory argument is only legal as the sole positional: among multiple arguments the intended working directory would be ambiguous, so every argument is a target and one naming an existing directory is an argument error (exit 3). Every token interpolated into the container command string -- the `cd` path and each target -- is shell-quoted per [CODING_RULES.md §Subprocess Handling](CODING_RULES.md#subprocess-handling); quoting is a no-op for plain target names.
 
 ```bash
 admt build                             # redo all in current directory
 admt build ../module_2/                # redo all in ../module_2/ (resolved to container path)
 admt build build/obj/foo.o             # redo build/obj/foo.o in current directory
 admt build /abs/host/proj/build/x.dot  # target mapped to its container path
+admt build a.elf b.elf c.elf           # one redo invocation, targets in order
 ```
 
 All path arguments are processed as follows:
@@ -711,9 +714,9 @@ class Context:
     noninteractive: bool = False
 
     # Command-specific arguments (set by CLI adapter per command)
-    # The CLI adapter sets `path` if the positional arg is a directory,
-    # or `target` if it is a file/non-existent target name.
-    target: str | None = None       # e.g., "build/obj/foo.o" for admt build
+    # The CLI adapter sets `path` if a sole positional arg is a directory,
+    # or `targets` for file/non-existent target names (admt build only).
+    targets: tuple[str, ...] = ()   # e.g., ("build/obj/foo.o",) for admt build
     path: Path | None = None        # e.g., "../module_2/" for admt build ../module_2/
     run_all: bool = False           # --all / -a flag for test, clean, coverage
 
@@ -781,13 +784,13 @@ class ContainerPassthroughCommand(Command):
     def execute(self, context: Context) -> Result:
         container = context.container_service
         path = context.resolve_container_path()
-        target = self.resolve_target(context)
-        redo_cmd = f"cd {path} && redo {target}"
+        targets = self.resolve_targets(context)
+        redo_cmd = build_redo_command(targets, cwd=path)  # shell-quotes each token
         return container.exec(redo_cmd, context)
 
-    def resolve_target(self, context: Context) -> str:
+    def resolve_targets(self, context: Context) -> list[str]:
         """Override for commands with special target logic."""
-        return self.redo_target
+        return [self.redo_target]
 ```
 
 Individual commands become minimal:
@@ -798,10 +801,10 @@ class BuildCommand(ContainerPassthroughCommand):
     help = "Build via redo in the current or specified directory"
     redo_target = "all"
 
-    def resolve_target(self, context: Context) -> str:
-        if context.target:
-            return context.target
-        return "all"
+    def resolve_targets(self, context: Context) -> list[str]:
+        if context.targets:
+            return list(context.targets)
+        return ["all"]
 
 
 class StyleCommand(ContainerPassthroughCommand):
@@ -1268,7 +1271,7 @@ Complete list of commands with their redo equivalents:
 | `admt env refresh` | `admt e refresh` | N/A | Yes | Re-run activate + rebuild snapshot |
 | `admt env list` | `admt e list` | N/A | No | List registered projects (`*` = this terminal's active) |
 | `admt env rm` | `admt e rm` | N/A | No | Remove container (`--volumes`, `--image`, `--remove-all`) |
-| `admt build [path]` | `admt b` | `redo all` or `redo <target>` | Yes | Default: all in cwd |
+| `admt build [path \| target...]` | `admt b` | `redo all` or `redo <target...>` | Yes | Default: all in cwd; a directory arg must be sole |
 | `admt what [path]` | `admt w` | `redo what` | Yes | List buildable targets |
 | `admt test [path]` | `admt t` | `redo test` | Yes | `--all` / `-a` for `redo test_all` |
 | `admt style [path]` | `admt s` | `redo style` | Yes | `--all` / `-a` for `redo style_all` |

@@ -18,7 +18,7 @@ def test_context_defaults_are_falsy(make_context):
     assert ctx.yes is False
     assert ctx.force is False
     assert ctx.noninteractive is False
-    assert ctx.target is None
+    assert ctx.targets == ()
     assert ctx.path is None
     assert ctx.run_all is False
 
@@ -26,12 +26,12 @@ def test_context_defaults_are_falsy(make_context):
 def test_context_accepts_overrides(make_context):
     ctx = make_context(
         verbose=True,
-        target="build/obj/foo.o",
+        targets=("build/obj/foo.o",),
         path=Path("/sim/foo"),
         run_all=True,
     )
     assert ctx.verbose is True
-    assert ctx.target == "build/obj/foo.o"
+    assert ctx.targets == ("build/obj/foo.o",)
     assert ctx.path == Path("/sim/foo")
     assert ctx.run_all is True
 

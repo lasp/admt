@@ -216,6 +216,41 @@ def test_absolute_file_target_outside_mounts_exits_4(
     mock_container.exec.assert_not_called()
 
 
+def test_multiple_build_targets_forward_in_one_invocation(
+    registered, mock_container, tmp_path, monkeypatch
+):
+    root, runner = registered
+    monkeypatch.chdir(root)
+    result = runner.invoke(cli, ["build", "a.elf", "b.elf", "c.elf"], env=_env_vars(tmp_path))
+    assert result.exit_code == 0, result.output
+    redo_cmd = mock_container.exec.call_args.args[0]
+    assert redo_cmd == "cd /home/user/myproj && redo a.elf b.elf c.elf"
+
+
+def test_directory_among_multiple_build_targets_exits_3(
+    registered, mock_container, tmp_path, monkeypatch
+):
+    """A directory is only legal as the sole positional (TEST_PLAN error-path row)."""
+    root, runner = registered
+    monkeypatch.chdir(root)
+    result = runner.invoke(cli, ["build", "a.elf", "docker"], env=_env_vars(tmp_path))
+    assert result.exit_code == ArgumentError.exit_code, result.output
+    assert "sole positional" in result.output
+    mock_container.exec.assert_not_called()
+
+
+def test_build_target_with_shell_characters_is_quoted(
+    registered, mock_container, tmp_path, monkeypatch
+):
+    """Interpolated tokens are shell-quoted (CODING_RULES Subprocess Handling)."""
+    root, runner = registered
+    monkeypatch.chdir(root)
+    result = runner.invoke(cli, ["build", "weird name.o", "b.elf"], env=_env_vars(tmp_path))
+    assert result.exit_code == 0, result.output
+    redo_cmd = mock_container.exec.call_args.args[0]
+    assert redo_cmd == "cd /home/user/myproj && redo 'weird name.o' b.elf"
+
+
 @pytest.mark.parametrize(
     ("command", "bogus"),
     [

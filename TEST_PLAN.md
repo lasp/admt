@@ -643,6 +643,7 @@ def test_no_circular_imports() -> None:
 | Invalid target path | 3 | Message: "path does not exist" |
 | Path outside volume mounts | 4 | Message: list mapped directories |
 | Missing markers for env init | 3 | Message: list which markers are missing |
+| Directory among multiple build targets | 3 | Message: a directory argument must be the sole positional |
 | Unknown project for env use | 3 | Message: list available projects |
 | Redo build failure | 1 | Show failed command, forward redo output |
 | Redo test failure | 1 | Show failed command, forward test output |
