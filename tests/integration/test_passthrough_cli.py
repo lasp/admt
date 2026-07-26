@@ -268,6 +268,20 @@ def test_passthrough_forwards_non_zero_exit(registered, mock_container, tmp_path
     assert result.exit_code == sentinel
 
 
+def test_build_failure_hints_at_generated_source_path(
+    registered, mock_container, tmp_path, monkeypatch
+):
+    """A failed source-relative .ads target points at its build/src/ twin."""
+    root, runner = registered
+    (root / "src" / "types" / "build" / "src").mkdir(parents=True)
+    (root / "src" / "types" / "build" / "src" / "foo.ads").touch()
+    monkeypatch.chdir(root)
+    mock_container.exec.return_value = 1
+    result = runner.invoke(cli, ["build", "src/types/foo.ads"], env=_env_vars(tmp_path))
+    assert result.exit_code == 1
+    assert "try 'admt build src/types/build/src/foo.ads'" in result.output
+
+
 # ----- debug flag -----
 
 

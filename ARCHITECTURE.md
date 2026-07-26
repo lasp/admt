@@ -1201,6 +1201,10 @@ When `--debug` is set, admt prepends `DEBUG=1` to redo commands inside the conta
 
 This enables Adamant's redo-level debug output for diagnosing build system issues. `--debug` also implies `--verbose`.
 
+### Build-Target Hint for Generated Sources
+
+Adamant generates sources into each directory's `build/src/`, so a source-relative name (`src/types/foo.ads`) has no redo rule, and redo's error does not say where the generated file lives. When `admt build <target>` fails, the target names an Ada source (`.ads`/`.adb`) with no `build/` component in its relative path, and `<dirname>/build/src/<basename>` exists on the host, admt prints a hint pointing at that path. The hint is advisory output only: the exit code remains redo's, nothing is retried, and no hint is printed when the candidate file is absent -- an unknown target gets no false suggestion.
+
 ### `admt env exec`
 
 `admt env exec` goes through the proxy script (`/tmp/admt/<project>/exec.sh`) so that the environment is activated. The argument is passed as a shell command string via `bash -c`:
