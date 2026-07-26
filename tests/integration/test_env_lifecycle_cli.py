@@ -177,7 +177,14 @@ def test_env_build_delegates(registered, mock_container, tmp_path):
     _, runner = registered
     result = runner.invoke(cli, ["env", "build"], env=_env_vars(tmp_path))
     assert result.exit_code == 0
-    mock_container.build_image.assert_called_once()
+    mock_container.build_image.assert_called_once_with(no_cache=False)
+
+
+def test_env_build_no_cache_flag(registered, mock_container, tmp_path):
+    _, runner = registered
+    result = runner.invoke(cli, ["env", "build", "--no-cache"], env=_env_vars(tmp_path))
+    assert result.exit_code == 0
+    mock_container.build_image.assert_called_once_with(no_cache=True)
 
 
 def test_env_push_delegates(registered, mock_container, tmp_path):

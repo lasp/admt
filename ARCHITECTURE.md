@@ -1252,7 +1252,7 @@ Complete list of commands with their redo equivalents:
 | `admt env restart` | `admt e restart` | N/A | No | stop + start |
 | `admt env login` | `admt e login` | N/A | Yes | Interactive bash shell (env activated via .bashrc) |
 | `admt env status` | `admt e status` | N/A | No | Project, its source, container state |
-| `admt env build` | `admt e build` | N/A | No | `docker compose build` |
+| `admt env build` | `admt e build` | N/A | No | `docker compose build`; `--no-cache` bypasses the layer cache |
 | `admt env push` | `admt e push` | N/A | No | `docker compose push` |
 | `admt env pull` | `admt e pull` | N/A | No | `docker compose pull` |
 | `admt env exec <cmd>` | `admt e exec` | N/A | Yes | Exec through proxy script; TTY auto-detected |

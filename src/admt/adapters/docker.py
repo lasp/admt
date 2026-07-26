@@ -239,9 +239,12 @@ class DockerAdapter:
             args.append("-v")
         return self._run_streaming(args)
 
-    def compose_build(self) -> CommandResult:
-        """``docker compose build``."""
-        return self._run_streaming(["build"])
+    def compose_build(self, *, no_cache: bool = False) -> CommandResult:
+        """``docker compose build`` (``--no-cache`` bypasses the layer cache)."""
+        args = ["build"]
+        if no_cache:
+            args.append("--no-cache")
+        return self._run_streaming(args)
 
     def compose_push(self) -> CommandResult:
         """``docker compose push``."""

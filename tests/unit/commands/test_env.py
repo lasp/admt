@@ -273,6 +273,12 @@ def test_env_build_push_pull_delegate(make_context):
         getattr(container, method).assert_called_once()
 
 
+def test_env_build_forwards_no_cache(make_context):
+    ctx, container = _ctx_with_container(make_context)
+    EnvBuildCommand(no_cache=True).execute(ctx)
+    container.build_image.assert_called_once_with(no_cache=True)
+
+
 def test_env_exec_uses_noninteractive_when_flag_set(make_context):
     ctx, container = _ctx_with_container(make_context, noninteractive=True)
     container.exec.return_value = 0
