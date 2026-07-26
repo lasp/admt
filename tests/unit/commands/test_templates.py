@@ -70,12 +70,27 @@ def test_find_stubs_finds_ads_and_adb(tmp_path):
     }
 
 
-def test_find_stubs_ignores_unrelated_files(tmp_path):
+def test_find_stubs_ignores_non_ada_files(tmp_path):
     (tmp_path / "component-foo-implementation.ads").touch()
     (tmp_path / "random.txt").touch()
-    (tmp_path / "component-foo.ads").touch()  # wrong pattern
+    (tmp_path / "foo.html").touch()
     stubs = _find_stubs(tmp_path)
     assert [p.name for p in stubs] == ["component-foo-implementation.ads"]
+
+
+def test_find_stubs_finds_test_dir_stub_names(tmp_path):
+    """A test dir's build/template holds tests-implementation, tester, and test.adb stubs."""
+    names = [
+        "foo_tests-implementation.ads",
+        "foo_tests-implementation.adb",
+        "component-foo-implementation-tester.ads",
+        "component-foo-implementation-tester.adb",
+        "test.adb",
+    ]
+    for name in names:
+        (tmp_path / name).touch()
+    stubs = _find_stubs(tmp_path)
+    assert {p.name for p in stubs} == set(names)
 
 
 def test_find_stubs_multiple_components(tmp_path):
@@ -204,6 +219,45 @@ def test_handle_stub_copy_noninteractive_skips(fake_home, tmp_path, make_context
     ctx, _ = _ctx_with_container(make_context, path=project_dir, noninteractive=True)
     TemplatesCommand()._handle_stub_copy(ctx)
     assert not (project_dir / "component-foo-implementation.ads").exists()
+
+
+def test_handle_stub_copy_noninteractive_message_names_cause_and_remedy(
+    fake_home, tmp_path, make_context, capsys
+):
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    _build_project(project_dir)
+    output = OutputService(verbose=False, quiet=False, yes=False, noninteractive=True)
+    ctx, _ = _ctx_with_container(make_context, path=project_dir, noninteractive=True, output=output)
+    TemplatesCommand()._handle_stub_copy(ctx)
+    out = capsys.readouterr().out
+    assert "Skipped stub copy (ADMT_NONINTERACTIVE without --yes)" in out
+    assert "Pass --yes to copy" in out
+
+
+def test_handle_stub_copy_decline_prints_plain_skip(
+    fake_home, tmp_path, make_context, capsys, monkeypatch
+):
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    _build_project(project_dir)
+    output = OutputService(verbose=False, quiet=False, yes=False, noninteractive=False)
+    ctx, _ = _ctx_with_container(make_context, path=project_dir, output=output)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "n")
+    TemplatesCommand()._handle_stub_copy(ctx)
+    out = capsys.readouterr().out
+    assert "Skipped stub copy." in out
+    assert "ADMT_NONINTERACTIVE" not in out
+
+
+def test_handle_stub_copy_noninteractive_with_yes_copies(fake_home, tmp_path, make_context):
+    """--yes is the agent-facing opt-in: it copies even when prompting is impossible."""
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    _build_project(project_dir)
+    ctx, _ = _ctx_with_container(make_context, path=project_dir, yes=True, noninteractive=True)
+    TemplatesCommand()._handle_stub_copy(ctx)
+    assert (project_dir / "component-foo-implementation.ads").read_text() == "NEW SPEC\n"
 
 
 def test_handle_stub_copy_force_skips_prompt(fake_home, tmp_path, make_context):

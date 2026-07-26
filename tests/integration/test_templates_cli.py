@@ -107,9 +107,24 @@ def test_templates_noninteractive_skips_copy(registered, mock_container, tmp_pat
     monkeypatch.chdir(root)
     result = runner.invoke(cli, ["templates"], env=_env_vars(tmp_path, ADMT_NONINTERACTIVE="1"))
     assert result.exit_code == 0, result.output
-    # redo ran, but copy was skipped.
+    # redo ran, but copy was skipped -- with the cause and the remedy named.
     assert mock_container.exec.called
     assert not (root / "component-foo-implementation.ads").exists()
+    assert "Skipped stub copy (ADMT_NONINTERACTIVE without --yes)" in result.output
+
+
+def test_templates_noninteractive_with_yes_copies(
+    registered, mock_container, tmp_path, monkeypatch
+):
+    """--yes is the agent-facing opt-in: it copies even when prompting is impossible."""
+    root, runner = registered
+    _seed_stubs(root)
+    monkeypatch.chdir(root)
+    result = runner.invoke(
+        cli, ["-y", "templates"], env=_env_vars(tmp_path, ADMT_NONINTERACTIVE="1")
+    )
+    assert result.exit_code == 0, result.output
+    assert (root / "component-foo-implementation.ads").read_text() == "NEW SPEC\n"
 
 
 def test_templates_force_skips_prompt(registered, mock_container, tmp_path, monkeypatch):
