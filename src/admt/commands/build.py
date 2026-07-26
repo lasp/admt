@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
 from admt.commands.base import ContainerPassthroughCommand
+from admt.exceptions import ConfigError
 
 if TYPE_CHECKING:
     from admt.context import Context, Result
@@ -20,8 +21,25 @@ class BuildCommand(ContainerPassthroughCommand):
     status_verb: ClassVar[str | None] = "building"
 
     def resolve_target(self, context: Context) -> str:
-        """Use ``context.target`` when the user supplied one, otherwise ``all``."""
-        return context.target if context.target else self.redo_target
+        """Use ``context.target`` when supplied (mapping absolute host paths), else ``all``.
+
+        An absolute target is a host path; redo runs in the container, so
+        the target maps through the volume mounts exactly like directory
+        arguments (``PathNotMappedError``, exit 4, when under no mount).
+        Relative targets are forwarded verbatim -- they resolve against
+        the mapped working directory identically on both sides of the
+        mount, and plain target names (``all``, ``foo_type_ranges.elf``)
+        are relative by construction.
+        """
+        if context.target is None:
+            return self.redo_target
+        target_path = Path(context.target)
+        if not target_path.is_absolute():
+            return context.target
+        if context.path_mapper is None:
+            msg = "This command requires an active project. Run 'admt env init' to set one up."
+            raise ConfigError(msg)
+        return str(context.path_mapper.host_to_container(target_path))
 
     def execute(self, context: Context) -> Result:
         """Run the passthrough build; on failure, hint at generated-source targets.

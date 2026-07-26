@@ -15,7 +15,7 @@ from admt.commands.style import StyleCommand
 from admt.commands.templates import TemplatesCommand
 from admt.commands.test_cmd import TestCommand
 from admt.commands.what import WhatCommand
-from admt.exceptions import ArgumentError
+from admt.exceptions import ArgumentError, ConfigError, PathNotMappedError
 from admt.services.container import ContainerService
 from admt.services.path_mapper import PathMapperService
 
@@ -90,6 +90,25 @@ def test_build_command_uses_context_target_when_present(make_context):
 def test_build_command_defaults_to_all(make_context):
     cmd = BuildCommand()
     assert cmd.resolve_target(make_context()) == "all"
+
+
+def test_build_command_maps_absolute_target_through_mounts(make_context):
+    mapper = PathMapperService({Path("/sim/proj"): Path("/home/user/proj")})
+    ctx = make_context(path_mapper=mapper, target="/sim/proj/views/build/dot/x.dot")
+    assert BuildCommand().resolve_target(ctx) == "/home/user/proj/views/build/dot/x.dot"
+
+
+def test_build_command_absolute_target_outside_mounts_errors(make_context):
+    mapper = PathMapperService({Path("/sim/proj"): Path("/home/user/proj")})
+    ctx = make_context(path_mapper=mapper, target="/elsewhere/x.dot")
+    with pytest.raises(PathNotMappedError, match="not under any volume mount"):
+        BuildCommand().resolve_target(ctx)
+
+
+def test_build_command_absolute_target_without_mapper_errors(make_context):
+    ctx = make_context(target="/sim/proj/x.dot")
+    with pytest.raises(ConfigError, match="requires an active project"):
+        BuildCommand().resolve_target(ctx)
 
 
 # ----- generated-source hint (BuildCommand failure path) -----

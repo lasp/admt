@@ -596,12 +596,13 @@ Both scripts are project-specific (keyed by project name in the path). When the 
 All passthrough commands accept an optional positional argument. The CLI adapter determines its meaning based on whether the resolved host path is a directory or not:
 
 - **Directory path** -> changes the working directory for the redo command (populates `Context.path`). The default redo target is used (e.g., `all` for build).
-- **File path or non-existent target name** -> passed as the redo target (populates `Context.target`); the working directory remains cwd. Only `admt build` forwards redo targets: on the fixed-target passthroughs (`what`, `test`, `style`, `analyze`, `clean`, `prove`, `coverage`, `publish`, `templates`) a non-directory positional is an argument error (exit 3) -- running the fixed target as if nothing was passed would silently ignore the argument.
+- **File path or non-existent target name** -> passed as the redo target (populates `Context.target`); the working directory remains cwd. Only `admt build` forwards redo targets: on the fixed-target passthroughs (`what`, `test`, `style`, `analyze`, `clean`, `prove`, `coverage`, `publish`, `templates`) a non-directory positional is an argument error (exit 3) -- running the fixed target as if nothing was passed would silently ignore the argument. An **absolute** target is a host path and maps through the volume mounts exactly like directory arguments (exit 4 when under no mount); **relative** targets are forwarded verbatim and resolve against the mapped working directory.
 
 ```bash
-admt build                     # redo all in current directory
-admt build ../module_2/        # redo all in ../module_2/ (resolved to container path)
-admt build build/obj/foo.o     # redo build/obj/foo.o in current directory
+admt build                             # redo all in current directory
+admt build ../module_2/                # redo all in ../module_2/ (resolved to container path)
+admt build build/obj/foo.o             # redo build/obj/foo.o in current directory
+admt build /abs/host/proj/build/x.dot  # target mapped to its container path
 ```
 
 All path arguments are processed as follows:

@@ -190,6 +190,32 @@ def test_positional_non_directory_is_target(registered, mock_container, tmp_path
     assert redo_cmd == "cd /home/user/myproj && redo build/obj/Linux/foo.o"
 
 
+def test_absolute_file_target_maps_to_container_path(
+    registered, mock_container, tmp_path, monkeypatch
+):
+    """An absolute host file target gets the same mount mapping as the cwd."""
+    root, runner = registered
+    monkeypatch.chdir(root)
+    host_target = str(root / "build" / "dot" / "flight_events.dot")
+    result = runner.invoke(cli, ["build", host_target], env=_env_vars(tmp_path))
+    assert result.exit_code == 0, result.output
+    redo_cmd = mock_container.exec.call_args.args[0]
+    assert redo_cmd == "cd /home/user/myproj && redo /home/user/myproj/build/dot/flight_events.dot"
+
+
+def test_absolute_file_target_outside_mounts_exits_4(
+    registered, mock_container, tmp_path, monkeypatch
+):
+    root, runner = registered
+    monkeypatch.chdir(root)
+    outside = str(tmp_path / "elsewhere" / "x.dot")
+    result = runner.invoke(cli, ["build", outside], env=_env_vars(tmp_path))
+    expected_exit = 4
+    assert result.exit_code == expected_exit, result.output
+    assert "not under any volume mount" in result.output
+    mock_container.exec.assert_not_called()
+
+
 @pytest.mark.parametrize(
     ("command", "bogus"),
     [
