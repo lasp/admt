@@ -12,8 +12,10 @@ from admt.commands.coverage import CoverageCommand
 from admt.commands.prove import ProveCommand
 from admt.commands.publish import PublishCommand
 from admt.commands.style import StyleCommand
+from admt.commands.templates import TemplatesCommand
 from admt.commands.test_cmd import TestCommand
 from admt.commands.what import WhatCommand
+from admt.exceptions import ArgumentError
 from admt.services.container import ContainerService
 from admt.services.path_mapper import PathMapperService
 
@@ -58,6 +60,26 @@ def test_supports_all_commands_switch_target_on_run_all(cls, base_target, all_ta
     cmd = cls()
     assert cmd.resolve_target(ctx_base) == base_target
     assert cmd.resolve_target(ctx_all) == all_target
+
+
+@pytest.mark.parametrize(
+    "cls",
+    [
+        WhatCommand,
+        TestCommand,
+        StyleCommand,
+        AnalyzeCommand,
+        CleanCommand,
+        ProveCommand,
+        CoverageCommand,
+        PublishCommand,
+        TemplatesCommand,
+    ],
+)
+def test_fixed_target_commands_reject_positional_target(cls, make_context):
+    """A non-directory positional is an argument error, never silently dropped."""
+    with pytest.raises(ArgumentError, match="only meaningful for 'admt build'"):
+        cls().resolve_target(make_context(target="../nonexistent/bogus"))
 
 
 def test_build_command_uses_context_target_when_present(make_context):

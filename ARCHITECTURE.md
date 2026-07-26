@@ -596,7 +596,7 @@ Both scripts are project-specific (keyed by project name in the path). When the 
 All passthrough commands accept an optional positional argument. The CLI adapter determines its meaning based on whether the resolved host path is a directory or not:
 
 - **Directory path** -> changes the working directory for the redo command (populates `Context.path`). The default redo target is used (e.g., `all` for build).
-- **File path or non-existent target name** -> passed as the redo target (populates `Context.target`). The working directory remains cwd.
+- **File path or non-existent target name** -> passed as the redo target (populates `Context.target`); the working directory remains cwd. Only `admt build` forwards redo targets: on the fixed-target passthroughs (`what`, `test`, `style`, `analyze`, `clean`, `prove`, `coverage`, `publish`, `templates`) a non-directory positional is an argument error (exit 3) -- running the fixed target as if nothing was passed would silently ignore the argument.
 
 ```bash
 admt build                     # redo all in current directory

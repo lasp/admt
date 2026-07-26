@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from admt.adapters.redo import RedoAdapter
 from admt.adapters.redo_output import match_redo_status, rewrite_line_terse, split_verb
 from admt.context import Result
-from admt.exceptions import ContainerError
+from admt.exceptions import ArgumentError, ContainerError
 
 if TYPE_CHECKING:
     from admt.adapters.docker import LineTransform
@@ -142,7 +142,19 @@ class ContainerPassthroughCommand(Command):
         Commands that set ``supports_all = True`` pick up ``--all``/``-a``
         automatically: ``context.run_all`` switches the target from
         ``<target>`` to ``<target>_all`` (e.g., ``test`` -> ``test_all``).
+
+        A populated ``context.target`` is an argument error here: the
+        positional was not a directory, and only ``admt build`` forwards
+        redo targets (``BuildCommand`` overrides this method). Running the
+        fixed target as if nothing was passed would silently ignore the
+        user's argument.
         """
+        if context.target is not None:
+            msg = (
+                f"'{context.target}' is not a directory. 'admt {self.name}' takes an "
+                f"optional directory path; redo targets are only meaningful for 'admt build'."
+            )
+            raise ArgumentError(msg)
         target = self.redo_target
         if self.supports_all and context.run_all:
             target = f"{target}_all"

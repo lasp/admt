@@ -50,7 +50,8 @@ class WhatCommand(ContainerPassthroughCommand):
             msg = "ContainerService was not wired for this command (CLI bug)."
             raise ContainerError(msg)
         container_path = context.resolve_container_path()
-        redo_cmd = RedoAdapter.build_command("what", cwd=container_path, debug=context.debug)
+        target = self.resolve_target(context)
+        redo_cmd = RedoAdapter.build_command(target, cwd=container_path, debug=context.debug)
         result = context.container_service.exec_captured(redo_cmd, merge_stderr=True)
         if result.returncode != 0:
             if result.stdout:
