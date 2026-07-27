@@ -78,7 +78,7 @@ def test_supports_all_commands_switch_target_on_run_all(cls, base_target, all_ta
 )
 def test_fixed_target_commands_reject_positional_target(cls, make_context):
     """A non-directory positional is an argument error, never silently dropped."""
-    with pytest.raises(ArgumentError, match="only meaningful for 'admt build'"):
+    with pytest.raises(ArgumentError, match="is not a directory"):
         cls().resolve_target(make_context(target="../nonexistent/bogus"))
 
 

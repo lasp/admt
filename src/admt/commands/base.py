@@ -151,8 +151,8 @@ class ContainerPassthroughCommand(Command):
         """
         if context.target is not None:
             msg = (
-                f"'{context.target}' is not a directory. 'admt {self.name}' takes an "
-                f"optional directory path; redo targets are only meaningful for 'admt build'."
+                f"'{context.target}' is not a directory. "
+                f"'admt {self.name}' takes an optional directory path."
             )
             raise ArgumentError(msg)
         target = self.redo_target

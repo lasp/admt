@@ -237,7 +237,7 @@ def test_positional_non_directory_on_fixed_target_command_errors(
     result = runner.invoke(cli, [command, bogus], env=_env_vars(tmp_path))
     assert result.exit_code == ArgumentError.exit_code, result.output
     assert "is not a directory" in result.output
-    assert "only meaningful for 'admt build'" in result.output
+    assert f"'admt {command}' takes an optional directory path" in result.output
     mock_container.exec.assert_not_called()
     mock_container.exec_captured.assert_not_called()
 
