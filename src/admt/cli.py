@@ -147,10 +147,11 @@ def env_status(admt_ctx: Context) -> None:
 
 
 @env_group.command(name="build")
+@click.option("--no-cache", is_flag=True, help="Build without using the layer cache")
 @click.pass_obj
-def env_build(admt_ctx: Context) -> None:
+def env_build(admt_ctx: Context, *, no_cache: bool) -> None:
     """Build the Docker image."""
-    _run_command(EnvBuildCommand(), admt_ctx)
+    _run_command(EnvBuildCommand(no_cache=no_cache), admt_ctx)
 
 
 @env_group.command(name="push")

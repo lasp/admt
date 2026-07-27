@@ -136,10 +136,10 @@ class ContainerService:
     # Image management
     # ------------------------------------------------------------------
 
-    def build_image(self) -> None:
-        """``docker compose build`` for the active service."""
-        self._echo_compose("build")
-        self._raise_on_failure("build", self._docker.compose_build())
+    def build_image(self, *, no_cache: bool = False) -> None:
+        """``docker compose build`` for the active service (optionally ``--no-cache``)."""
+        self._echo_compose("build --no-cache" if no_cache else "build")
+        self._raise_on_failure("build", self._docker.compose_build(no_cache=no_cache))
 
     def push_image(self) -> None:
         """``docker compose push`` for the active service."""

@@ -202,9 +202,13 @@ class EnvBuildCommand(Command):
     requires_project: ClassVar[bool] = True
     requires_container: ClassVar[bool] = True
 
+    def __init__(self, *, no_cache: bool = False) -> None:
+        """Capture whether to bypass the layer cache."""
+        self._no_cache = no_cache
+
     def execute(self, context: Context) -> Result:
         """Delegate to the ContainerService."""
-        _require_container(context).build_image()
+        _require_container(context).build_image(no_cache=self._no_cache)
         return Result(exit_code=0)
 
 

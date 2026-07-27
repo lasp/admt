@@ -3,14 +3,16 @@
 The command extends the redo passthrough with a post-exec stub-copy dance:
 
 1. Run ``redo templates`` in the container (via the passthrough base).
-2. Look for ``component-*-implementation.{ads,adb}`` in
-   ``<host_cwd>/build/template/`` (the volume-mounted build dir on the
-   host, where Adamant's ``redo templates`` rule deposits generated
-   stubs -- see ``redo/rules/build_templates.py`` in adamant).
+2. Collect the Ada ``.ads``/``.adb`` files in ``<host_cwd>/build/template/``
+   (the volume-mounted build dir on the host). The framework routes only
+   hand-editable sources there -- implementation, tester, and main/test
+   entry files (see ``redo/rules/build_templates.py`` and the template-
+   destination rule in ``gen/generators/basic.py`` in adamant) -- so the
+   directory's contents are the stub set.
 3. Prompt ``Copy implementation stubs to source directory? [Y/n]``, honoring
-   ``--yes``/``--force`` (auto-copy) and ``ADMT_NONINTERACTIVE`` (skip copy
-   silently -- the redo itself still ran, which is the useful side effect
-   for scripted contexts).
+   ``--yes``/``--force`` (auto-copy). ``ADMT_NONINTERACTIVE`` without either
+   flag skips the copy and says so -- the redo itself still ran, which is
+   the useful side effect for scripted contexts.
 4. Back up any pre-existing destination files to ``tempfile.mkdtemp(prefix=
    "admt-backup-")`` before overwriting. Write a manifest into the backup
    dir recording the source directory + filenames, and store the backup
@@ -49,12 +51,18 @@ def _latest_backup_marker() -> Path:
 
 
 def _find_stubs(build_template: Path) -> list[Path]:
-    """Return generated implementation stubs under ``build_template``, sorted."""
+    """Return generated stubs under ``build_template``, sorted.
+
+    Everything the framework deposits in ``build/template/`` is a
+    hand-editable stub by its own classification (implementation, tester,
+    and main/test entry sources), so the directory's Ada files ARE the
+    stub set -- admt does not re-derive the framework's naming rule.
+    """
     if not build_template.is_dir():
         return []
     stubs: list[Path] = []
-    stubs.extend(build_template.glob("component-*-implementation.ads"))
-    stubs.extend(build_template.glob("component-*-implementation.adb"))
+    stubs.extend(build_template.glob("*.ads"))
+    stubs.extend(build_template.glob("*.adb"))
     return sorted(stubs)
 
 
@@ -90,7 +98,13 @@ class TemplatesCommand(ContainerPassthroughCommand):
             return Result(exit_code=0)
         self._print_found(context, stubs, host_cwd)
         if not self._should_copy(context):
-            context.output.info("Skipped stub copy.")
+            if context.noninteractive:
+                context.output.info(
+                    "Skipped stub copy (ADMT_NONINTERACTIVE without --yes). "
+                    "Pass --yes to copy, or copy from build/template/ manually."
+                )
+            else:
+                context.output.info("Skipped stub copy.")
             return Result(exit_code=0)
         backup_dir, backed_up = self._backup_existing(host_cwd, stubs)
         copied = self._copy_stubs(stubs, host_cwd)
@@ -115,8 +129,15 @@ class TemplatesCommand(ContainerPassthroughCommand):
 
     @staticmethod
     def _should_copy(context: Context) -> bool:
-        """Decide whether to proceed with the copy, honoring flags."""
-        if context.force:
+        """Decide whether to proceed with the copy, honoring flags.
+
+        ``--force`` and ``--yes`` both copy: the prompt's default is Yes,
+        and ``--yes`` accepts defaults. ``ADMT_NONINTERACTIVE`` without an
+        explicit opt-in skips the copy -- prompting is impossible there,
+        and the redo run itself is the useful side effect for scripted
+        contexts.
+        """
+        if context.force or context.yes:
             return True
         if context.noninteractive:
             return False

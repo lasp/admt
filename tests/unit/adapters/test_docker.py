@@ -126,6 +126,12 @@ def test_compose_build_push_pull(adapter):
         _assert_streamed(adapter, expected, popen)
 
 
+def test_compose_build_no_cache_appends_flag(adapter):
+    with patch("subprocess.Popen", return_value=_make_popen_mock()) as popen:
+        adapter.compose_build(no_cache=True)
+    _assert_streamed(adapter, ["build", "--no-cache"], popen)
+
+
 def test_streaming_forwards_return_code(adapter):
     with patch("subprocess.Popen", return_value=_make_popen_mock(returncode=SENTINEL_EXIT)):
         result = adapter.compose_up()

@@ -16,7 +16,7 @@ from click.testing import CliRunner
 
 from admt.adapters.docker import CommandResult
 from admt.cli import cli
-from admt.exceptions import ConfigError
+from admt.exceptions import ArgumentError, ConfigError
 from admt.services.container import ContainerService
 from admt.services.path_mapper import PathMapperService
 
@@ -190,18 +190,66 @@ def test_positional_non_directory_is_target(registered, mock_container, tmp_path
     assert redo_cmd == "cd /home/user/myproj && redo build/obj/Linux/foo.o"
 
 
-def test_positional_unknown_name_becomes_target(registered, mock_container, tmp_path, monkeypatch):
+def test_absolute_file_target_maps_to_container_path(
+    registered, mock_container, tmp_path, monkeypatch
+):
+    """An absolute host file target gets the same mount mapping as the cwd."""
     root, runner = registered
     monkeypatch.chdir(root)
-    # WhatCommand captures via exec_captured; seed a benign empty output.
-    mock_container.exec_captured.return_value = CommandResult(returncode=0, stdout="")
-    result = runner.invoke(cli, ["what", "some_name"], env=_env_vars(tmp_path))
-    assert result.exit_code == 0
-    # WhatCommand always invokes ``redo what`` regardless of any positional
-    # target string (it doesn't honor context.target); the positional still
-    # parses cleanly without crashing the CLI.
-    redo_cmd = mock_container.exec_captured.call_args.args[0]
-    assert redo_cmd.endswith("&& redo what")
+    host_target = str(root / "build" / "dot" / "flight_events.dot")
+    result = runner.invoke(cli, ["build", host_target], env=_env_vars(tmp_path))
+    assert result.exit_code == 0, result.output
+    redo_cmd = mock_container.exec.call_args.args[0]
+    assert redo_cmd == "cd /home/user/myproj && redo /home/user/myproj/build/dot/flight_events.dot"
+
+
+def test_absolute_file_target_outside_mounts_exits_4(
+    registered, mock_container, tmp_path, monkeypatch
+):
+    root, runner = registered
+    monkeypatch.chdir(root)
+    outside = str(tmp_path / "elsewhere" / "x.dot")
+    result = runner.invoke(cli, ["build", outside], env=_env_vars(tmp_path))
+    expected_exit = 4
+    assert result.exit_code == expected_exit, result.output
+    assert "not under any volume mount" in result.output
+    mock_container.exec.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("command", "bogus"),
+    [
+        ("what", "some_name"),
+        ("clean", "../../../nonexistent/bogus"),
+    ],
+)
+def test_positional_non_directory_on_fixed_target_command_errors(
+    command, bogus, registered, mock_container, tmp_path, monkeypatch
+):
+    """Fixed-target passthroughs reject a non-directory positional (exit 3).
+
+    Only ``admt build`` forwards redo targets; anywhere else the argument
+    would otherwise be silently dropped and the fixed target would run as
+    if nothing was passed.
+    """
+    root, runner = registered
+    monkeypatch.chdir(root)
+    result = runner.invoke(cli, [command, bogus], env=_env_vars(tmp_path))
+    assert result.exit_code == ArgumentError.exit_code, result.output
+    assert "is not a directory" in result.output
+    assert f"'admt {command}' takes an optional directory path" in result.output
+    mock_container.exec.assert_not_called()
+    mock_container.exec_captured.assert_not_called()
+
+
+def test_positional_directory_on_fixed_target_command_works(
+    registered, mock_container, tmp_path, monkeypatch
+):
+    root, runner = registered
+    monkeypatch.chdir(root)
+    result = runner.invoke(cli, ["clean", str(root / "docker")], env=_env_vars(tmp_path))
+    assert result.exit_code == 0, result.output
+    assert mock_container.exec.call_args.args[0] == "cd /home/user/myproj/docker && redo clean"
 
 
 # ----- aliases -----
@@ -244,6 +292,20 @@ def test_passthrough_forwards_non_zero_exit(registered, mock_container, tmp_path
     mock_container.exec.return_value = sentinel
     result = runner.invoke(cli, ["build"], env=_env_vars(tmp_path))
     assert result.exit_code == sentinel
+
+
+def test_build_failure_hints_at_generated_source_path(
+    registered, mock_container, tmp_path, monkeypatch
+):
+    """A failed source-relative .ads target points at its build/src/ twin."""
+    root, runner = registered
+    (root / "src" / "types" / "build" / "src").mkdir(parents=True)
+    (root / "src" / "types" / "build" / "src" / "foo.ads").touch()
+    monkeypatch.chdir(root)
+    mock_container.exec.return_value = 1
+    result = runner.invoke(cli, ["build", "src/types/foo.ads"], env=_env_vars(tmp_path))
+    assert result.exit_code == 1
+    assert "try 'admt build src/types/build/src/foo.ads'" in result.output
 
 
 # ----- debug flag -----

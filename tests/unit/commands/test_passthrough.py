@@ -12,8 +12,10 @@ from admt.commands.coverage import CoverageCommand
 from admt.commands.prove import ProveCommand
 from admt.commands.publish import PublishCommand
 from admt.commands.style import StyleCommand
+from admt.commands.templates import TemplatesCommand
 from admt.commands.test_cmd import TestCommand
 from admt.commands.what import WhatCommand
+from admt.exceptions import ArgumentError, ConfigError, PathNotMappedError
 from admt.services.container import ContainerService
 from admt.services.path_mapper import PathMapperService
 
@@ -60,6 +62,26 @@ def test_supports_all_commands_switch_target_on_run_all(cls, base_target, all_ta
     assert cmd.resolve_target(ctx_all) == all_target
 
 
+@pytest.mark.parametrize(
+    "cls",
+    [
+        WhatCommand,
+        TestCommand,
+        StyleCommand,
+        AnalyzeCommand,
+        CleanCommand,
+        ProveCommand,
+        CoverageCommand,
+        PublishCommand,
+        TemplatesCommand,
+    ],
+)
+def test_fixed_target_commands_reject_positional_target(cls, make_context):
+    """A non-directory positional is an argument error, never silently dropped."""
+    with pytest.raises(ArgumentError, match="is not a directory"):
+        cls().resolve_target(make_context(target="../nonexistent/bogus"))
+
+
 def test_build_command_uses_context_target_when_present(make_context):
     cmd = BuildCommand()
     assert cmd.resolve_target(make_context(target="build/obj/foo.o")) == "build/obj/foo.o"
@@ -68,6 +90,84 @@ def test_build_command_uses_context_target_when_present(make_context):
 def test_build_command_defaults_to_all(make_context):
     cmd = BuildCommand()
     assert cmd.resolve_target(make_context()) == "all"
+
+
+def test_build_command_maps_absolute_target_through_mounts(make_context):
+    mapper = PathMapperService({Path("/sim/proj"): Path("/home/user/proj")})
+    ctx = make_context(path_mapper=mapper, target="/sim/proj/views/build/dot/x.dot")
+    assert BuildCommand().resolve_target(ctx) == "/home/user/proj/views/build/dot/x.dot"
+
+
+def test_build_command_absolute_target_outside_mounts_errors(make_context):
+    mapper = PathMapperService({Path("/sim/proj"): Path("/home/user/proj")})
+    ctx = make_context(path_mapper=mapper, target="/elsewhere/x.dot")
+    with pytest.raises(PathNotMappedError, match="not under any volume mount"):
+        BuildCommand().resolve_target(ctx)
+
+
+def test_build_command_absolute_target_without_mapper_errors(make_context):
+    ctx = make_context(target="/sim/proj/x.dot")
+    with pytest.raises(ConfigError, match="requires an active project"):
+        BuildCommand().resolve_target(ctx)
+
+
+# ----- generated-source hint (BuildCommand failure path) -----
+
+
+def _failing_build_ctx(make_context, tmp_path, *, target):
+    container = MagicMock(spec=ContainerService)
+    container.exec.return_value = 1
+    mapper = PathMapperService({tmp_path: Path("/home/user/proj")})
+    return make_context(
+        path_mapper=mapper,
+        container_service=container,
+        path=tmp_path,
+        target=target,
+    )
+
+
+def test_build_failure_hints_at_build_src_twin(make_context, tmp_path):
+    (tmp_path / "src" / "types" / "build" / "src").mkdir(parents=True)
+    (tmp_path / "src" / "types" / "build" / "src" / "foo.ads").touch()
+    ctx = _failing_build_ctx(make_context, tmp_path, target="src/types/foo.ads")
+    result = BuildCommand().execute(ctx)
+    assert result.exit_code == 1
+    info_lines = [c.args[0] for c in ctx.output.info.call_args_list]
+    assert (
+        "Generated sources are built under build/src/; "
+        "try 'admt build src/types/build/src/foo.ads'." in info_lines
+    )
+
+
+def test_build_failure_no_hint_when_candidate_absent(make_context, tmp_path):
+    ctx = _failing_build_ctx(make_context, tmp_path, target="src/types/foo.ads")
+    BuildCommand().execute(ctx)
+    info_lines = [c.args[0] for c in ctx.output.info.call_args_list]
+    assert not any("build/src" in line for line in info_lines)
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        None,  # no target supplied
+        "foo_type_ranges.elf",  # not an Ada source
+        "/abs/host/foo.ads",  # absolute paths are host paths, not source-relative names
+        "build/src/foo.ads",  # already routed through a build dir
+    ],
+)
+def test_build_failure_hint_gates(make_context, tmp_path, target):
+    ctx = _failing_build_ctx(make_context, tmp_path, target=target)
+    assert BuildCommand._generated_source_hint(ctx) is None
+
+
+def test_build_success_prints_no_hint(make_context, tmp_path):
+    (tmp_path / "build" / "src").mkdir(parents=True)
+    (tmp_path / "build" / "src" / "foo.ads").touch()
+    ctx = _failing_build_ctx(make_context, tmp_path, target="foo.ads")
+    ctx.container_service.exec.return_value = 0
+    BuildCommand().execute(ctx)
+    info_lines = [c.args[0] for c in ctx.output.info.call_args_list]
+    assert not any("Generated sources" in line for line in info_lines)
 
 
 def test_what_command_ignores_run_all(make_context):

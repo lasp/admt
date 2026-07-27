@@ -596,12 +596,13 @@ Both scripts are project-specific (keyed by project name in the path). When the 
 All passthrough commands accept an optional positional argument. The CLI adapter determines its meaning based on whether the resolved host path is a directory or not:
 
 - **Directory path** -> changes the working directory for the redo command (populates `Context.path`). The default redo target is used (e.g., `all` for build).
-- **File path or non-existent target name** -> passed as the redo target (populates `Context.target`). The working directory remains cwd.
+- **File path or non-existent target name** -> passed as the redo target (populates `Context.target`); the working directory remains cwd. Only `admt build` forwards redo targets: on the fixed-target passthroughs (`what`, `test`, `style`, `analyze`, `clean`, `prove`, `coverage`, `publish`, `templates`) a non-directory positional is an argument error (exit 3) -- running the fixed target as if nothing was passed would silently ignore the argument. An **absolute** target is a host path and maps through the volume mounts exactly like directory arguments (exit 4 when under no mount); **relative** targets are forwarded verbatim and resolve against the mapped working directory.
 
 ```bash
-admt build                     # redo all in current directory
-admt build ../module_2/        # redo all in ../module_2/ (resolved to container path)
-admt build build/obj/foo.o     # redo build/obj/foo.o in current directory
+admt build                             # redo all in current directory
+admt build ../module_2/                # redo all in ../module_2/ (resolved to container path)
+admt build build/obj/foo.o             # redo build/obj/foo.o in current directory
+admt build /abs/host/proj/build/x.dot  # target mapped to its container path
 ```
 
 All path arguments are processed as follows:
@@ -823,12 +824,16 @@ class ProveCommand(ContainerPassthroughCommand):
 1. Exec `redo templates` in the container (same as other passthroughs)
 2. Identify generated stub files in build/template/ directory on the host
    (accessible via volume mount -- Adamant's redo templates rule writes
-   stubs there; see redo/rules/build_templates.py in adamant). Look for
-   Ada .ads and .adb files matching the component-<name>-implementation.*
-   pattern.
+   stubs there; see redo/rules/build_templates.py in adamant). Collect all
+   Ada .ads and .adb files in that directory: the framework routes only
+   hand-editable sources (implementation, tester, and main/test entry
+   files) into build/template/, so its contents are the stub set.
 3. Prompt user: "Copy implementation stubs to source directory? [Y/n]"
    (unless --yes: auto-copy, unless --force: auto-copy without prompt)
    Note: --force skips the confirmation prompt but still creates the backup.
+   Under ADMT_NONINTERACTIVE the prompt cannot run: --yes (or --force)
+   copies; otherwise the copy is skipped with a message naming the cause
+   and the manual alternative (copy from build/template/).
 4. If yes:
    a. Back up existing implementation files to /tmp/admt-backup-XXXX/
       (via tempfile.mkdtemp, which lands in /tmp on Linux/macOS)
@@ -1197,6 +1202,10 @@ When `--debug` is set, admt prepends `DEBUG=1` to redo commands inside the conta
 
 This enables Adamant's redo-level debug output for diagnosing build system issues. `--debug` also implies `--verbose`.
 
+### Build-Target Hint for Generated Sources
+
+Adamant generates sources into each directory's `build/src/`, so a source-relative name (`src/types/foo.ads`) has no redo rule, and redo's error does not say where the generated file lives. When `admt build <target>` fails, the target names an Ada source (`.ads`/`.adb`) with no `build/` component in its relative path, and `<dirname>/build/src/<basename>` exists on the host, admt prints a hint pointing at that path. The hint is advisory output only: the exit code remains redo's, nothing is retried, and no hint is printed when the candidate file is absent -- an unknown target gets no false suggestion.
+
 ### `admt env exec`
 
 `admt env exec` goes through the proxy script (`/tmp/admt/<project>/exec.sh`) so that the environment is activated. The argument is passed as a shell command string via `bash -c`:
@@ -1252,7 +1261,7 @@ Complete list of commands with their redo equivalents:
 | `admt env restart` | `admt e restart` | N/A | No | stop + start |
 | `admt env login` | `admt e login` | N/A | Yes | Interactive bash shell (env activated via .bashrc) |
 | `admt env status` | `admt e status` | N/A | No | Project, its source, container state |
-| `admt env build` | `admt e build` | N/A | No | `docker compose build` |
+| `admt env build` | `admt e build` | N/A | No | `docker compose build`; `--no-cache` bypasses the layer cache |
 | `admt env push` | `admt e push` | N/A | No | `docker compose push` |
 | `admt env pull` | `admt e pull` | N/A | No | `docker compose pull` |
 | `admt env exec <cmd>` | `admt e exec` | N/A | Yes | Exec through proxy script; TTY auto-detected |

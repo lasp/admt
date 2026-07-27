@@ -230,7 +230,13 @@ def test_restart_aborts_on_stop_failure(svc, docker):
 def test_build_image(svc, docker):
     docker.compose_build.return_value = _ok()
     svc.build_image()
-    docker.compose_build.assert_called_once()
+    docker.compose_build.assert_called_once_with(no_cache=False)
+
+
+def test_build_image_forwards_no_cache(svc, docker):
+    docker.compose_build.return_value = _ok()
+    svc.build_image(no_cache=True)
+    docker.compose_build.assert_called_once_with(no_cache=True)
 
 
 def test_build_image_raises_on_failure(svc, docker):
