@@ -38,7 +38,7 @@ CONFIG_SCHEMA_VERSION = 1
 # instead (see ``_current_session_key``).
 _TTY_FDS = (0, 2, 1)
 
-# Store-key prefix for ``ADMT_SESSION_KEY`` entries -- keeps keyed entries
+# Store-key prefix for keyed (session-key-sourced) entries -- keeps them
 # disjoint from tty device paths in ``sessions.yml``.
 _SESSION_KEY_PREFIX = "session:"
 # Keyed entries carry a last-used timestamp instead of a live ``sid``. Prune

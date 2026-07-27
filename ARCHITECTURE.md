@@ -391,7 +391,7 @@ Run 'admt env init' from a directory with default.do, docker/*.yml, and env/acti
 
 The `activate_script` path is derived by convention: `<container_project_root>/env/activate`. If this file does not exist in the container, admt warns but still functions (exec commands just won't have the environment activated).
 
-After init, the new project becomes the active project automatically.
+After init, the new project becomes the active project automatically: the global default moves to it, and the registering session is pinned when it holds a session handle (a TTY or a session key). A key-less tty-less `env init` still registers the project and sets the global default for future sessions, but the caller itself must adopt `ADMT_ENV` or a session key before project commands resolve (see [Active Project Resolution](#active-project-resolution)).
 
 #### Re-running `admt env init` on a registered project
 
