@@ -52,7 +52,10 @@ def _make_project(base: Path, *, name: str = "myproj"):
 
 
 def _env_vars(tmp_path, **overrides):
-    env = {"HOME": str(tmp_path)}
+    # A synthetic session key: CliRunner tests are tty-less under CI, and the
+    # resolution ladder refuses key-less tty-less callers -- the suite holds
+    # a pin like any headless session (a dev terminal's tty still outranks).
+    env = {"HOME": str(tmp_path), "ADMT_SESSION_KEY": "itest-session"}
     env.update({k: str(v) for k, v in overrides.items()})
     return env
 

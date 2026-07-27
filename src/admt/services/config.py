@@ -34,7 +34,8 @@ CONFIG_SCHEMA_VERSION = 1
 # first, but a piped/redirected stdin (``echo y | admt env rm``) must not
 # lose the terminal identity -- stderr and stdout usually still point at the
 # terminal, so fall back to them. When all three are redirected (CI, full
-# pipelines, agents), the session layer keys on ``ADMT_SESSION_KEY`` instead.
+# pipelines, agents), the session layer keys on the caller's session key
+# instead (see ``_current_session_key``).
 _TTY_FDS = (0, 2, 1)
 
 # Store-key prefix for ``ADMT_SESSION_KEY`` entries -- keeps keyed entries
@@ -56,14 +57,47 @@ class ActiveSource(StrEnum):
     """Which mechanism selected the active project (reported by ``env status``).
 
     Values follow the provenance-label rule: name the literal mechanism when
-    the source is user-managed (an env var the user may need to find and
-    change), a plain scope phrase when it is not (a tty needs no managing).
+    the source is an env var the user may need to find and outrank or unset,
+    a plain scope phrase when it is not (a tty needs no managing).
+    ``NO_SESSION`` is the introspection value for callers with no session
+    handle at all -- project-requiring commands refuse those callers instead
+    of resolving (see ``_NO_SESSION_MSG``).
     """
 
     ENV_OVERRIDE = "ADMT_ENV"
     SESSION = "this terminal"
     KEY_SESSION = "this session (ADMT_SESSION_KEY)"
+    HARNESS_SESSION = "this session (CLAUDE_CODE_SESSION_ID)"
     GLOBAL = "global default"
+    NO_SESSION = "no session (no tty or session key)"
+
+
+# Well-known agent-harness session variables, consulted (in order) after
+# ``ADMT_SESSION_KEY``. Each is a stable per-session id the harness injects
+# into every subprocess environment -- the harness-level analog of a
+# controlling tty, which the harness itself severs (fresh ``setsid`` per
+# command shell). A curated table of well-known context variables is the
+# established CLI idiom for execution-context detection (CI detection,
+# ``NO_COLOR``, the ``EDITOR`` chain); ``ADMT_SESSION_KEY`` remains the
+# generic, vendor-neutral override for any harness not listed here.
+_HARNESS_SESSION_VARS: tuple[tuple[str, ActiveSource], ...] = (
+    ("CLAUDE_CODE_SESSION_ID", ActiveSource.HARNESS_SESSION),
+)
+
+# Refusal for key-less tty-less callers (ConfigError, exit 2). Without a
+# session handle admt cannot tell which session a command belongs to, so
+# resolving via -- or ``env use`` writing -- the shared global would make
+# concurrent headless callers race each other's active project. The error
+# names both remedies instead.
+_NO_SESSION_MSG = (
+    "No tty and no session key: admt cannot tell which session this command "
+    "belongs to, so it cannot resolve or store an active project. Either "
+    "name the project per command -- ADMT_ENV=<project> admt <cmd> -- or "
+    "set a stable key once per session -- export ADMT_SESSION_KEY=<unique-id>. "
+    "Known agent harnesses (Claude Code) are detected automatically; if yours "
+    "is not, set ADMT_SESSION_KEY or ask the admt maintainers to add your "
+    "harness's session variable."
+)
 
 
 def _current_terminal() -> tuple[str, int] | None:
@@ -72,7 +106,7 @@ def _current_terminal() -> tuple[str, int] | None:
     ``None`` when there is no controlling tty (piped/redirected stdin, CI,
     ``ADMT_NONINTERACTIVE`` agents) or on non-POSIX platforms lacking
     ``os.ttyname``/``os.getsid`` (e.g. Windows) -- the session layer then
-    falls back to ``ADMT_SESSION_KEY`` (see ``_current_session_key``).
+    falls back to the caller's session key (see ``_current_session_key``).
     """
     tty_name = getattr(os, "ttyname", None)
     get_sid = getattr(os, "getsid", None)
@@ -110,23 +144,27 @@ def _session_alive(entry: object) -> bool:
     return True
 
 
-def _current_session_key() -> str | None:
-    """Return the ``ADMT_SESSION_KEY`` store key for tty-less callers, else ``None``.
+def _current_session_key() -> tuple[str, ActiveSource] | None:
+    """Return ``(store_key, source)`` for a tty-less caller's session, else ``None``.
 
-    A controlling terminal always outranks the variable, so interactive
-    shells keep per-terminal semantics even with ``ADMT_SESSION_KEY``
-    exported. Without one, a non-empty value keys the session store for the
-    caller's logical session -- a harness maps its own stable per-session id
-    onto it once (``ADMT_SESSION_KEY=$<harness-session-var>``) and every
-    command in that session then shares one pin, exactly as commands in one
-    terminal share a tty pin.
+    A controlling terminal always outranks every variable, so interactive
+    shells keep per-terminal semantics even with a key exported. Without
+    one, the first non-empty variable wins: ``ADMT_SESSION_KEY`` (the
+    explicit, vendor-neutral key -- any stable string the caller owns),
+    then the recognized harness session ids (``_HARNESS_SESSION_VARS``),
+    so a supported harness's commands share one pin with zero
+    configuration, exactly as commands in one terminal share a tty pin.
+    An empty value is treated as unset. The returned ``source`` names the
+    winning variable for provenance reporting (R11).
     """
     if _current_terminal() is not None:
         return None
-    value = os.environ.get("ADMT_SESSION_KEY")
-    if not value:
-        return None
-    return _SESSION_KEY_PREFIX + value
+    candidates = (("ADMT_SESSION_KEY", ActiveSource.KEY_SESSION), *_HARNESS_SESSION_VARS)
+    for var, source in candidates:
+        value = os.environ.get(var)
+        if value:
+            return _SESSION_KEY_PREFIX + value, source
+    return None
 
 
 def _entry_alive(entry: object) -> bool:
@@ -259,11 +297,20 @@ class ConfigService:
         return project
 
     def set_active_project(self, name: str) -> None:
-        """Set ``name`` active: this session's entry AND the global default.
+        """Set ``name`` active for this session; scope follows the session handle.
 
-        Writing the session entry switches the *current* session immediately
-        (resolution step 2); updating ``active_project`` makes *new* sessions
-        default to it (step 3).
+        - **Terminal sessions** write two things: this terminal's entry (so
+          the *current* session switches immediately, resolution step 2) and
+          the global ``active_project`` (so *new* sessions default to the
+          last project a person used, step 3).
+        - **Keyed sessions** (tty-less with a session key) write only their
+          own entry. The global default is a human-terminal convenience;
+          concurrent headless sessions moving it would retarget every
+          later-inheriting session -- the exact collision the keyed store
+          exists to prevent.
+        - **Key-less tty-less callers** are refused (``ConfigError``,
+          exit 2): with no handle there is nowhere to store the choice, and
+          writing the global alone would race other sessions.
 
         The session entry is written UNCONDITIONALLY -- even when ``name`` is
         already the global default. This session may be pinned to a different
@@ -280,16 +327,26 @@ class ConfigService:
             available = sorted(config.projects)
             msg = f"No registered project named '{name}'. Available: {available}"
             raise ArgumentError(msg)
+        term = _current_terminal()
+        if term is None and _current_session_key() is None:
+            raise ConfigError(_NO_SESSION_MSG)
         self._write_session(name)
-        if config.active_project == name:
+        if term is None or config.active_project == name:
             return
         config.active_project = name
         self.save(config)
 
     def get_active_project(self) -> ProjectConfig:
-        """Return the active project (see resolution order); refreshes first."""
+        """Return the active project (see resolution order); refreshes first.
+
+        Key-less tty-less callers are refused with the session-handle error
+        rather than resolved: with no handle, following the global would race
+        every other session's ``env use`` (see ``_NO_SESSION_MSG``).
+        """
         config = self.load()
-        chosen, _source = self._resolve_active_name(config)
+        chosen, source = self._resolve_active_name(config)
+        if source is ActiveSource.NO_SESSION:
+            raise ConfigError(_NO_SESSION_MSG)
         if not chosen:
             msg = "No project configured. Run 'admt env init' to set up a project."
             raise ConfigError(msg)
@@ -324,11 +381,20 @@ class ConfigService:
         """Resolve the active project name by precedence; pin on first resolve.
 
         ``ADMT_ENV`` (explicit) -> this session's entry (the controlling
-        terminal's, else the ``ADMT_SESSION_KEY`` session's) -> the global
-        ``active_project``. A session entry is consulted only when it names a
-        currently-registered project for a live session, so a stale entry
-        (tty recycled, keyed session idle past the prune window, project
-        removed) transparently falls through to global.
+        terminal's, else the session key's -- ``ADMT_SESSION_KEY``, else a
+        recognized harness session id) -> the global ``active_project``. A
+        session entry is consulted only when it names a currently-registered
+        project for a live session, so a stale entry (tty recycled, keyed
+        session idle past the prune window, project removed) transparently
+        falls through to global.
+
+        **The global rung is reachable only with a session handle.** A
+        key-less tty-less caller resolves to ``(None, NO_SESSION)``: it has
+        no way to hold a pin, so following the global would make it silently
+        retarget on every other session's ``env use`` -- the collision the
+        session store exists to prevent. Introspection callers
+        (``resolved_active_name``, ``get_active_source``) report that state;
+        project-requiring paths raise ``_NO_SESSION_MSG`` on it.
 
         **Lazy auto-pin:** when resolution falls through to the global default,
         the result is immediately pinned to this session. Without this, an
@@ -338,10 +404,8 @@ class ConfigService:
         project. Every resolution path pins (``env list``, ``env status``,
         passthrough commands alike): showing the user a project is a
         commitment. The pin is the no-shim equivalent of exporting
-        ``ADMT_ENV`` at shell startup. No-ops only when neither a controlling
-        terminal nor ``ADMT_SESSION_KEY`` exists (key-less CI/pipes), which
-        correctly keep following the global. ``ADMT_ENV`` resolutions are
-        never persisted -- explicit per-invocation overrides stay ephemeral.
+        ``ADMT_ENV`` at shell startup. ``ADMT_ENV`` resolutions are never
+        persisted -- explicit per-invocation overrides stay ephemeral.
         """
         override = os.environ.get("ADMT_ENV")
         if override:
@@ -349,6 +413,8 @@ class ConfigService:
         pinned = self._session_project(config)
         if pinned is not None:
             return pinned
+        if _current_terminal() is None and _current_session_key() is None:
+            return None, ActiveSource.NO_SESSION
         if config.active_project and config.active_project in config.projects:
             self._write_session(config.active_project)
         return config.active_project, ActiveSource.GLOBAL
@@ -398,10 +464,10 @@ class ConfigService:
             store_key = term[0]
             new_entry: dict[str, Any] = {"project": name, "sid": term[1]}
         else:
-            key = _current_session_key()
-            if key is None:
+            keyed = _current_session_key()
+            if keyed is None:
                 return
-            store_key = key
+            store_key = keyed[0]
             new_entry = {"project": name, "written": int(time.time())}
         sessions = {
             other: entry
@@ -425,8 +491,8 @@ class ConfigService:
         """Return this session's pinned ``(project, source)``, or ``None``.
 
         The controlling terminal's entry is consulted first; tty-less callers
-        fall back to their ``ADMT_SESSION_KEY`` entry. ``None`` when there is
-        no pin, the pin is stale, or it names a project no longer registered.
+        fall back to their session key's entry. ``None`` when there is no
+        pin, the pin is stale, or it names a project no longer registered.
         """
         term = _current_terminal()
         if term is not None:
@@ -447,16 +513,20 @@ class ConfigService:
         return None
 
     def _keyed_pin(self, config: AdmtConfig) -> tuple[str, ActiveSource] | None:
-        """Return the ``ADMT_SESSION_KEY`` pin while it is within the idle window.
+        """Return the session key's pin while it is within the idle window.
 
-        Resolving through the pin refreshes its last-used stamp (throttled to
+        The source labels the variable that produced the key
+        (``ADMT_SESSION_KEY`` or a recognized harness id), keeping the
+        winning mechanism visible in ``env status``. Resolving through the
+        pin refreshes its last-used stamp (throttled to
         ``_KEYED_TOUCH_INTERVAL_SECS``), so an actively-resolving session
         never expires -- only genuine disuse does.
         """
-        key = _current_session_key()
-        if key is None:
+        keyed = _current_session_key()
+        if keyed is None:
             return None
-        entry = self._load_sessions().get(key)
+        store_key, source = keyed
+        entry = self._load_sessions().get(store_key)
         if not isinstance(entry, dict) or not _entry_alive(entry):
             return None
         name = entry.get("project")
@@ -465,7 +535,7 @@ class ConfigService:
         written = entry.get("written")
         if isinstance(written, int) and time.time() - written > _KEYED_TOUCH_INTERVAL_SECS:
             self._write_session(name)
-        return name, ActiveSource.KEY_SESSION
+        return name, source
 
     def check_and_refresh_project(self, name: str) -> None:
         """Re-parse the compose file and update the project when mtime changed."""

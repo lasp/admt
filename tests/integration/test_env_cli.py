@@ -175,7 +175,10 @@ def test_env_use_switches_active_project(tmp_path):
     runner = CliRunner()
     runner.invoke(cli, ["env", "init", str(root_a)], env=_env(tmp_path))
     runner.invoke(cli, ["env", "init", str(root_b)], env=_env(tmp_path))
-    result = runner.invoke(cli, ["env", "use", "proj_a"], env=_env(tmp_path))
+    # A session key so the switch holds a pin when the run is tty-less (CI).
+    result = runner.invoke(
+        cli, ["env", "use", "proj_a"], env=_env(tmp_path, ADMT_SESSION_KEY="itest-session")
+    )
     assert result.exit_code == 0, result.output
     assert "Active project: proj_a" in result.output
 
