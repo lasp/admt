@@ -75,7 +75,7 @@ def test_minimal_concrete_command_executes(make_context):
     assert result.exit_code == 0
 
 
-def test_container_passthrough_resolve_target_returns_class_attr(make_context):
+def test_container_passthrough_resolve_targets_returns_class_attr(make_context):
     class Fake(ContainerPassthroughCommand):
         name = "fake"
         help = "fake"
@@ -84,10 +84,10 @@ def test_container_passthrough_resolve_target_returns_class_attr(make_context):
         def execute(self, context):
             return Result()
 
-    assert Fake().resolve_target(make_context()) == "all"
+    assert Fake().resolve_targets(make_context()) == ["all"]
 
 
-def test_container_passthrough_resolve_target_override_wins(make_context):
+def test_container_passthrough_resolve_targets_override_wins(make_context):
     class Fake(ContainerPassthroughCommand):
         name = "fake"
         help = "fake"
@@ -96,11 +96,11 @@ def test_container_passthrough_resolve_target_override_wins(make_context):
         def execute(self, context):
             return Result()
 
-        def resolve_target(self, context):
-            return context.target or self.redo_target
+        def resolve_targets(self, context):
+            return list(context.targets) or [self.redo_target]
 
-    assert Fake().resolve_target(make_context(target="custom")) == "custom"
-    assert Fake().resolve_target(make_context()) == "all"
+    assert Fake().resolve_targets(make_context(targets=("custom",))) == ["custom"]
+    assert Fake().resolve_targets(make_context()) == ["all"]
 
 
 def _passthrough_ctx(make_context, *, path: Path | None = None, **flags):
@@ -264,14 +264,14 @@ def test_passthrough_forwards_exec_exit_code(make_context):
     assert result.exit_code == sentinel
 
 
-def test_passthrough_uses_resolve_target_output(make_context):
+def test_passthrough_uses_resolve_targets_output(make_context):
     class Fake(ContainerPassthroughCommand):
         name = "fake"
         help = "fake"
         redo_target = "test"
 
-        def resolve_target(self, context):
-            return "test_all" if context.run_all else self.redo_target
+        def resolve_targets(self, context):
+            return ["test_all"] if context.run_all else [self.redo_target]
 
     ctx, container = _passthrough_ctx(make_context, path=Path("/sim/proj"), run_all=True)
     Fake().execute(ctx)

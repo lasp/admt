@@ -86,10 +86,11 @@ class ContainerPassthroughCommand(Command):
 
     1. ``Context.resolve_container_path`` maps the host cwd (or the
        explicit ``context.path``) to the container-side path.
-    2. ``resolve_target(context)`` selects the redo target (defaults to
-       ``redo_target``; ``--all`` subclasses override).
+    2. ``resolve_targets(context)`` selects the redo targets (defaults to
+       ``[redo_target]``; ``--all`` switching and build's target forwarding
+       happen here).
     3. ``RedoAdapter.build_command`` assembles ``cd <path> && [DEBUG=1
-       ]redo <target>``.
+       ]redo <target...>``.
     4. ``ContainerService.exec`` ensures the container is running and
        the env snapshot is materialized, then forwards through the proxy
        with ``merge_stderr=True`` (redo writes human output to stderr;
@@ -136,29 +137,29 @@ class ContainerPassthroughCommand(Command):
             raise TypeError(msg)
         return super().__new__(cls)
 
-    def resolve_target(self, context: Context) -> str:
-        """Return the redo target for this command.
+    def resolve_targets(self, context: Context) -> list[str]:
+        """Return the redo targets for this command.
 
         Commands that set ``supports_all = True`` pick up ``--all``/``-a``
         automatically: ``context.run_all`` switches the target from
         ``<target>`` to ``<target>_all`` (e.g., ``test`` -> ``test_all``).
 
-        A populated ``context.target`` is an argument error here: the
+        Populated ``context.targets`` are an argument error here: the
         positional was not a directory, and only ``admt build`` forwards
         redo targets (``BuildCommand`` overrides this method). Running the
         fixed target as if nothing was passed would silently ignore the
         user's argument.
         """
-        if context.target is not None:
+        if context.targets:
             msg = (
-                f"'{context.target}' is not a directory. "
+                f"'{context.targets[0]}' is not a directory. "
                 f"'admt {self.name}' takes an optional directory path."
             )
             raise ArgumentError(msg)
         target = self.redo_target
         if self.supports_all and context.run_all:
             target = f"{target}_all"
-        return target
+        return [target]
 
     def execute(self, context: Context) -> Result:
         """Map path, assemble redo command, forward through the container.
@@ -183,10 +184,10 @@ class ContainerPassthroughCommand(Command):
             msg = "ContainerService was not wired for this command (CLI bug)."
             raise ContainerError(msg)
         container_path = context.resolve_container_path()
-        target = self.resolve_target(context)
+        targets = self.resolve_targets(context)
         if self.status_verb:
             context.output.info(context.output.admt(f"{self.status_verb}..."))
-        redo_cmd = RedoAdapter.build_command(target, cwd=container_path, debug=context.debug)
+        redo_cmd = RedoAdapter.build_command(targets, cwd=container_path, debug=context.debug)
         exit_code = context.container_service.exec(
             redo_cmd,
             interactive=False,

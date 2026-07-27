@@ -37,7 +37,9 @@ class Context:
         yes: Auto-accept interactive prompts with their default value.
         force: Overwrite existing files without confirmation.
         noninteractive: Derived from the ``ADMT_NONINTERACTIVE`` env var.
-        target: Optional redo target (e.g., ``build/obj/foo.o``).
+        targets: Redo targets forwarded by ``admt build`` (e.g.,
+            ``("build/obj/foo.o",)``); empty means the command's default
+            target.
         path: Optional host directory resolved into the container.
         run_all: ``--all``/``-a`` flag on commands that support it.
     """
@@ -52,7 +54,7 @@ class Context:
     yes: bool = False
     force: bool = False
     noninteractive: bool = False
-    target: str | None = None
+    targets: tuple[str, ...] = ()
     path: Path | None = None
     run_all: bool = False
 

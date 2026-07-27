@@ -207,22 +207,35 @@ def env_list(admt_ctx: Context) -> None:
 
 
 def _parse_positional(admt_ctx: Context, arg: str | None) -> None:
-    """Populate ``context.path`` (when ``arg`` is a directory on disk) or ``context.target``."""
+    """Populate ``context.path`` (when ``arg`` is a directory on disk) or ``context.targets``."""
     if not arg:
         return
     resolved = (Path.cwd() / arg).resolve(strict=False)
     if resolved.is_dir():
         admt_ctx.path = resolved
     else:
-        admt_ctx.target = arg
+        admt_ctx.targets = (arg,)
+
+
+def _parse_positionals(admt_ctx: Context, args: tuple[str, ...]) -> None:
+    """Classify build's positionals: one arg keeps directory-or-target semantics.
+
+    Two or more args are all redo targets; ``BuildCommand`` validates that
+    none of them names a directory (a directory is only legal as the sole
+    positional).
+    """
+    if len(args) <= 1:
+        _parse_positional(admt_ctx, args[0] if args else None)
+    else:
+        admt_ctx.targets = args
 
 
 @cli.command(name="build")
-@click.argument("path_or_target", required=False)
+@click.argument("path_or_targets", nargs=-1)
 @click.pass_obj
-def build(admt_ctx: Context, path_or_target: str | None) -> None:
-    """Build via redo (default: redo all). PATH_OR_TARGET cd's or names a target."""
-    _parse_positional(admt_ctx, path_or_target)
+def build(admt_ctx: Context, path_or_targets: tuple[str, ...]) -> None:
+    """Build via redo (default: redo all). A sole directory arg cd's; args name redo targets."""
+    _parse_positionals(admt_ctx, path_or_targets)
     _run_command(BuildCommand(), admt_ctx)
 
 
