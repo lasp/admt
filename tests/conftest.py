@@ -17,11 +17,26 @@ import pytest
 
 import admt.commands
 from admt.context import Context
-from admt.services.config import ConfigService
+from admt.services.config import _HARNESS_SESSION_VARS, ConfigService
 from admt.services.output import OutputService
 
 for _info in pkgutil.walk_packages(admt.commands.__path__, prefix="admt.commands."):
     importlib.import_module(_info.name)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_session_env(monkeypatch):
+    """Drop inherited session-identity variables so the suite is hermetic.
+
+    These variables change active-project resolution for tty-less processes
+    -- exactly what a pytest run is -- so values exported by the invoking
+    environment would perturb every resolution-path test. The harness ids
+    are the sharpest case: an agent harness running the gate injects its own
+    session id into every shell, which would silently key every "key-less"
+    test. Tests that exercise the keyed session layer set values explicitly.
+    """
+    for var in ("ADMT_SESSION_KEY", *(name for name, _source in _HARNESS_SESSION_VARS)):
+        monkeypatch.delenv(var, raising=False)
 
 
 @pytest.fixture

@@ -675,13 +675,23 @@ Covering the [Compose Parsing](ARCHITECTURE.md#compose-parsing) and [Active Proj
 
 | Scenario | What to verify |
 |----------|---------------|
-| `ADMT_ENV` set | Wins over session entry and global |
+| `ADMT_ENV` set | Wins over session entry and global; resolves for key-less tty-less callers with nothing persisted |
 | Session entry for current TTY | Used when no `ADMT_ENV`; overrides global |
-| `env use` writes both | Session entry for this TTY **and** global `active_project` updated |
+| `env use` from a terminal | Session entry for this TTY **and** global `active_project` updated |
+| `env use` from a keyed session | Only the keyed entry is written; the global default is untouched |
+| `env use` with no TTY and no key | Refused (exit 2) naming both remedies; global untouched, nothing written |
 | New terminal (different TTY) | No session entry; falls back to global = last used |
 | Stale entry (`getsid` mismatch) | Ignored and pruned; falls back to global |
-| No controlling TTY (piped / `ADMT_NONINTERACTIVE`) | Session layer skipped; uses `ADMT_ENV` then global |
-| `env status` source | Reports active project **and** its source (`ADMT_ENV` / this terminal / global) |
+| No controlling TTY, no session key | Project-requiring commands refuse (exit 2); `env list` lists projects with no active marker |
+| No TTY + `ADMT_SESSION_KEY` set | Pin held under `session:<key>`; survives another session's `env use` |
+| No TTY + recognized harness id set (`CLAUDE_CODE_SESSION_ID` / `CODEX_THREAD_ID` / `GEMINI_SESSION_ID`) | Pin held with zero configuration; source reported as a generic `this session (harness session id)` |
+| No TTY + both key variables set | `ADMT_SESSION_KEY` outranks any harness variable |
+| Empty key value (either variable) | Treated as unset |
+| TTY present + session key set | TTY wins; no keyed entry is written |
+| Keyed entry idle past the prune window | Ignored and pruned; falls back to global, then re-pins |
+| Keyed entry resolved within the window | Honored, and its last-used stamp refreshes (throttled) |
+| Two headless sessions, distinct keys | Each holds its own pin while the global moves |
+| `env status` source | Reports active project **and** its source (`ADMT_ENV` / this terminal / this session, named for the winning key variable / global) |
 | Two worktrees, two TTYs (tier 3) | `env use wt1` in one terminal and `wt2` in another target distinct containers concurrently |
 
 ---

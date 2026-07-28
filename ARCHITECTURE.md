@@ -338,7 +338,7 @@ projects:
 
 The stored `service_name`, `container_name`, and `volume_mounts` are **resolved** values (see [Compose Parsing](#compose-parsing)), not raw compose-file text -- so a parameterized compose like `container_name: ${COMPOSE_PROJECT_NAME:-adamant_example}_container` is stored as its fully-expanded result (e.g., `adamant_example-wt1_container`).
 
-Per-shell active-project state is **not** stored here. It lives in a separate per-terminal store (see [Active Project Resolution](#active-project-resolution)).
+Per-session active-project state is **not** stored here. It lives in a separate per-session store (see [Active Project Resolution](#active-project-resolution)).
 
 ### Compose Parsing
 
@@ -391,7 +391,7 @@ Run 'admt env init' from a directory with default.do, docker/*.yml, and env/acti
 
 The `activate_script` path is derived by convention: `<container_project_root>/env/activate`. If this file does not exist in the container, admt warns but still functions (exec commands just won't have the environment activated).
 
-After init, the new project becomes the active project automatically.
+After init, the new project becomes the active project automatically: the global default moves to it, and the registering session is pinned when it holds a session handle (a TTY or a session key). A key-less tty-less `env init` still registers the project and sets the global default for future sessions, but the caller itself must adopt `ADMT_ENV` or a session key before project commands resolve (see [Active Project Resolution](#active-project-resolution)).
 
 #### Re-running `admt env init` on a registered project
 
@@ -414,7 +414,7 @@ admt env use adamant_example
 admt env use adamant-standalone
 ```
 
-`env use` writes **two** things: the per-terminal session entry (so the *current* terminal switches immediately) and the global `active_project` (so *new* terminals default to the last project you used). See [Active Project Resolution](#active-project-resolution). The active project determines which container all commands target. This is critical when working in a repo (like `adamant/`) that is mounted into multiple project containers -- which is also why the active project cannot be inferred from the working directory: a shared mount like `adamant/` belongs to several projects at once.
+`env use` writes this session's entry, so the *current* session switches immediately. From a terminal it **also** updates the global `active_project` (so *new* sessions default to the last project a person used); a keyed session (tty-less caller holding a session key) writes only its own entry -- the global default is a human-terminal convenience, and headless activity never moves it. A key-less tty-less `env use` is refused: with no session handle there is nowhere to store the choice (see [Active Project Resolution](#active-project-resolution)). The active project determines which container all commands target. This is critical when working in a repo (like `adamant/`) that is mounted into multiple project containers -- which is also why the active project cannot be inferred from the working directory: a shared mount like `adamant/` belongs to several projects at once.
 
 ### `ADMT_ENV` Override
 
@@ -439,13 +439,24 @@ $ admt env list
 
 ### Active Project Resolution
 
-Different terminals must be able to target different projects at the same time -- e.g. one terminal per worktree, each on its own container -- while a single global default still applies to freshly opened terminals. admt achieves this with a **per-terminal session store** plus the global `active_project`, resolved in this order:
+Concurrent sessions must be able to target different projects at the same time -- e.g. one terminal per worktree, or two headless agents in different checkouts, each on its own container -- while a single global default still applies to fresh sessions. admt achieves this with a **per-session store** plus the global `active_project`, resolved in this order:
 
-1. **`ADMT_ENV`** environment variable, if set. Explicit, per-invocation, always wins.
-2. **Per-terminal session entry**, if one exists for this terminal (set by `admt env use`).
-3. **Global `active_project`** from `~/.admt/config.yml` (the last project any terminal `use`d).
+1. **`ADMT_ENV`** environment variable, if set. Explicit, per-invocation, always wins. Needs no session handle -- it names the project outright, and is never persisted.
+2. **Per-session entry**, if one exists for this session (set by `admt env use`, or by the lazy auto-pin). A session is identified by its controlling TTY, or -- for tty-less callers -- by a session key: `ADMT_SESSION_KEY`, else a recognized harness session variable (see [Per-Session Store](#per-session-store)).
+3. **Global `active_project`** from `~/.admt/config.yml` (the last project a terminal `use`d or an `env init` activated) -- reachable **only for callers holding a session handle** (a TTY or a session key).
 
-If none of these yields a registered project, admt prints:
+A key-less tty-less caller cannot hold a pin, so letting it follow the shared global would silently retarget it on every other session's `env use` -- the exact collision the session store exists to prevent. Project-requiring commands refuse instead (exit 2):
+
+```
+No tty and no session key: admt cannot tell which session this command belongs to, so it
+cannot resolve or store an active project. Either name the project per command --
+ADMT_ENV=<project> admt <cmd> -- or set a stable key once per session -- export
+ADMT_SESSION_KEY=<unique-id>. Known agent harnesses (Claude Code) are detected
+automatically; if yours is not, set ADMT_SESSION_KEY or ask the admt maintainers to add
+your harness's session variable.
+```
+
+If resolution runs (a handle exists) but none of the rungs yields a registered project, admt prints:
 
 ```
 No project configured. Run 'admt env init' to set up a project.
@@ -453,19 +464,26 @@ No project configured. Run 'admt env init' to set up a project.
 
 Whichever wins, admt then looks up that project's cached config (after the [Config Auto-Update](#config-auto-update) staleness check), and -- for container commands -- maps the host working directory to the container path via that project's volume mounts.
 
-#### Per-Terminal Session Store
+#### Per-Session Store
 
-The session store gives admt per-shell memory **without** a shell shim, an `eval`, or any rc-file setup: a normal `admt env use` in one terminal cannot change another terminal's behavior, and a child process cannot export into its parent shell, so admt records the choice itself.
+The session store gives admt per-session memory **without** a shell shim, an `eval`, or any rc-file setup: a normal `admt env use` in one session cannot change another session's behavior, and a child process cannot export into its parent shell, so admt records the choice itself.
 
-- **Key:** the controlling TTY of the admt process (e.g. `/dev/ttys003`), with the POSIX session id (`getsid`) stored alongside as a staleness guard. Two admt invocations in the same terminal share a TTY; a different terminal window has a different TTY.
-- **Location:** `~/.admt/sessions.yml` (separate from `config.yml`; this is volatile per-terminal state, not project registry).
-- **Write:** `admt env use <name>` records `<tty> -> {project: <name>, sid: <getsid>}` and also updates the global `active_project`.
-- **Read:** resolution step 2 looks up the current TTY. The entry is honored only if its stored `sid` still matches the current session id; otherwise the TTY was recycled by a new terminal and the stale entry is ignored (it is dropped on the next session write, which prunes entries whose owning shell has exited). The store is a disposable cache: an unreadable or corrupt `sessions.yml` degrades to "no sessions" rather than failing commands, and a failed pin write (unwritable `~/.admt`, disk full) degrades to a warning -- the terminal then follows the global default. The terminal is identified by probing stdin, then stderr, then stdout for a tty -- so a piped stdin (`echo y | admt ...`) does not lose the terminal's pin.
-- **Lazy auto-pin:** the first time a terminal resolves the active project via the global default (step 3), admt writes a session entry pinning that terminal to the resolved project. **Every resolution path pins** -- `env list`, `env status`, and passthrough commands alike -- because any command that has shown the user which project the terminal is on has made a commitment; the terminal must stay on that project until told otherwise. This snapshots the inherited global into the terminal -- the no-shim equivalent of exporting `ADMT_ENV` at shell startup -- so that a later `env use` in another terminal (which moves the global) cannot change what an already-resolved terminal targets. Without it, an unpinned terminal would keep following every global change, leaking one terminal's `env use` into others. `ADMT_ENV`-sourced resolutions are never persisted (explicit per-invocation overrides stay ephemeral), and a global naming an unregistered project is not pinned. New terminals still inherit the last-used global, then immediately pin themselves.
-- **No controlling TTY** (CI, agents under `ADMT_NONINTERACTIVE`, piped or `xargs` invocations): the session layer is skipped entirely; resolution uses `ADMT_ENV` then global `active_project`. Those contexts should set `ADMT_ENV` explicitly.
-- **Granularity is per-terminal, not per-process:** a subshell or script launched within a terminal inherits that terminal's active project.
+- **Location:** `~/.admt/sessions.yml` (separate from `config.yml`; this is volatile per-session state, not project registry).
+- **Key -- two forms.** A session is keyed by whichever identifies it:
+  - **Controlling TTY** (e.g. `/dev/ttys003`), with the POSIX session id (`getsid`) stored alongside as a staleness guard. Two admt invocations in the same terminal share a TTY; a different terminal window has a different TTY. The terminal is identified by probing stdin, then stderr, then stdout for a tty -- so a piped stdin (`echo y | admt ...`) does not lose the terminal's pin.
+  - **A session key**, for callers with no controlling TTY (AI agent harnesses, CI, piped or `xargs` invocations) -- the first non-empty of:
+    - **`ADMT_SESSION_KEY`** -- the explicit, vendor-neutral key. Caller-supplied input -- admt never sets or generates it, the same contract as `ADMT_ENV` and `ADMT_NONINTERACTIVE`: the caller exports its own stable id once (a CI run id, any stable string) and every command it runs shares the pin. It outranks every harness variable, so it is also the override for a caller that wants a different identity than its harness's.
+    - **A recognized harness session variable** -- the stable per-session id an agent harness injects into the environment. It is the harness-level analog of a controlling TTY: the harness runs each command in a fresh kernel session (no inheritable tty), and this id is the durable identity it substitutes. A curated table of well-known context variables is the established CLI idiom for execution-context detection (CI detection, `NO_COLOR`, the `EDITOR` chain), so supported harnesses hold a pin with zero configuration; a harness not in the table maps its id onto `ADMT_SESSION_KEY` itself. The recognized set (authoritative in `_HARNESS_SESSION_VARS`) is `CLAUDE_CODE_SESSION_ID` (Claude Code) and `CODEX_THREAD_ID` (Codex), both present on the normal shell/tool-execution path, plus `GEMINI_SESSION_ID` (Gemini CLI), which is exposed only in that tool's hook environment and so will not match on a typical invocation -- it is listed for completeness.
 
-This is intentionally observable state (R11), not hidden: `admt env status` reports the active project **and its source** -- `ADMT_ENV`, this terminal's session entry, or the global default -- so the user can always tell why a given project is active.
+    The store key is `session:<value>` either way, keeping keyed entries disjoint from tty device paths. A controlling TTY always outranks every key variable, so interactive shells keep per-terminal semantics even with a key exported.
+- **Write:** `admt env use <name>` records the entry for this session. From a terminal it also updates the global `active_project`; a keyed session writes only its own entry (headless activity never moves the global default); a key-less tty-less caller is refused (see [Active Project Resolution](#active-project-resolution)). Terminal entries store `{project, sid}`; keyed entries store `{project, written}` -- a last-used Unix timestamp, since a harness runs each command as a fresh process and leaves no pid to probe.
+- **Read:** resolution step 2 looks up this session's entry. A terminal entry is honored only if its stored `sid` still matches the current session id; otherwise the TTY was recycled by a new terminal and the stale entry is ignored. A keyed entry is honored while it is within the idle window (below). The store is a disposable cache: an unreadable or corrupt `sessions.yml` degrades to "no sessions" rather than failing commands, and a failed pin write (unwritable `~/.admt`, disk full) degrades to a warning -- the session then follows the global default.
+- **Liveness and pruning.** Every write prunes entries whose owner is gone: terminal entries when their session leader has exited, keyed entries after **30 days of inactivity**. The window is generous because a keyed session can be long-lived -- resumed across restarts (a harness resume preserves the session id, so the on-disk pin keeps resolving) and only occasionally exercised. Resolving through a keyed pin refreshes its timestamp (throttled to at most hourly, so concurrent sessions do not rewrite the store on every command), so an actively-used session never expires -- only genuine disuse does. An expired pin is simply re-pinned by the session's next resolution.
+- **Lazy auto-pin:** the first time a session resolves the active project via the global default (step 3), admt writes an entry pinning that session to the resolved project. **Every resolution path pins** -- `env list`, `env status`, and passthrough commands alike -- because any command that has shown the user which project the session is on has made a commitment; the session must stay on that project until told otherwise. This snapshots the inherited global into the session -- the no-shim equivalent of exporting `ADMT_ENV` at shell startup -- so that a later `env use` elsewhere (which moves the global) cannot change what an already-resolved session targets. Without it, an unpinned session would keep following every global change, leaking one session's `env use` into others. `ADMT_ENV`-sourced resolutions are never persisted (explicit per-invocation overrides stay ephemeral), and a global naming an unregistered project is not pinned. New sessions still inherit the last-used global, then immediately pin themselves.
+- **Neither TTY nor session key:** project-requiring commands and `env use` are refused (exit 2) with the error above -- there is no way to hold a pin, and following (or moving) the shared global would race every concurrent session. `ADMT_ENV` still resolves (it needs no handle), and registry introspection still works: `env list` lists the registered projects -- with no active marker -- so the caller can discover the names the error's remedies need.
+- **Granularity is per-session, not per-process:** a subshell or script launched within a terminal inherits that terminal's active project, and every command a harness runs under one session key shares that session's pin.
+
+This is intentionally observable state (R11), not hidden: `admt env status` reports the active project **and its source** -- `ADMT_ENV`, this terminal, this session (`ADMT_SESSION_KEY` when you set that key, since you manage it, or a generic "harness session id" when admt auto-detected your harness, since you do not), or the global default -- so the user can always tell why a given project is active. For a key-less tty-less caller, `env status` surfaces the refusal error itself: the diagnosis *is* the status.
 
 ---
 
@@ -880,7 +898,7 @@ class ConfigService:
         """Report which mechanism selected the active project (for env status)."""
         ...
     def set_active_project(self, name: str) -> None:
-        """Set the per-terminal session entry AND the global active_project."""
+        """Set this session's entry AND the global active_project."""
         ...
     def register_project(self, project_root: Path) -> ProjectConfig:
         """Register a project. Verifies markers, derives config via
@@ -889,7 +907,7 @@ class ConfigService:
     def list_projects(self) -> dict[str, ProjectConfig]: ...
 ```
 
-The per-terminal session store (`~/.admt/sessions`, keyed by controlling TTY with a `getsid` staleness guard) is managed by `ConfigService`. Deriving resolved metadata requires shelling out, so `register_project` and the auto-refresh delegate the `docker compose config` call to the Docker adapter (only adapters import `subprocess`); the resolved struct is passed back to the service.
+The per-session store (`~/.admt/sessions.yml`, keyed by controlling TTY with a `getsid` staleness guard, or by the caller's session key -- `ADMT_SESSION_KEY`, else a recognized harness session variable -- with an idle-timeout guard) is managed by `ConfigService`. Deriving resolved metadata requires shelling out, so `register_project` and the auto-refresh delegate the `docker compose config` call to the Docker adapter (only adapters import `subprocess`); the resolved struct is passed back to the service.
 
 ### Container Service
 

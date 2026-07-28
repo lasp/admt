@@ -337,9 +337,9 @@ class EnvListCommand(Command):
     def execute(self, context: Context) -> Result:
         """Render ``name  compose_file`` lines; prefix the active project with ``*``.
 
-        The ``*`` marks what THIS terminal resolves to (ADMT_ENV / its session /
-        the global default) -- not the bare global -- so the listing matches what
-        ``env status`` and build commands actually target in this terminal.
+        The ``*`` marks what THIS session resolves to (ADMT_ENV / its session
+        pin / the global default) -- not the bare global -- so the listing
+        matches what ``env status`` and build commands actually target here.
         """
         projects = context.config_service.list_projects()
         if not projects:

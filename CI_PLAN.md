@@ -540,12 +540,12 @@ Standalone Adamant is the default tier-3 fixture configuration. A `multi-repo` c
 
 ### Worktree Configuration Coverage
 
-admt's worktree support changed how project metadata is derived and selected: compose metadata is resolved via `docker compose config` (which loads a colocated `.env` and expands `${VAR:-default}` interpolation -- so a parameterized `container_name` resolves to its real per-worktree value), the `.env` mtime participates in config staleness alongside the compose file's, and the active project is per-terminal (TTY-keyed session store, `ADMT_ENV` outranking it). Each of those behaviors has a binary-boundary failure mode tier 1+2 cannot see, so tier 3 covers them explicitly (`test_env_worktrees.py`):
+admt's worktree support changed how project metadata is derived and selected: compose metadata is resolved via `docker compose config` (which loads a colocated `.env` and expands `${VAR:-default}` interpolation -- so a parameterized `container_name` resolves to its real per-worktree value), the `.env` mtime participates in config staleness alongside the compose file's, and the active project is per-session (a TTY- or session-key-keyed session store, `ADMT_ENV` outranking it). Each of those behaviors has a binary-boundary failure mode tier 1+2 cannot see, so tier 3 covers them explicitly (`test_env_worktrees.py`):
 
 - **Parameterized registration.** A fixture compose using `${COMPOSE_PROJECT_NAME:-...}` for project and container name plus parameterized host ports, with a colocated `.env`: `admt env init` must register the *resolved* values (the exec hot path targets the resolved `container_name`), and the no-`.env` default must reproduce the unparameterized behavior.
 - **`.env` staleness.** Editing the `.env` (project rename, port change) with the compose file untouched must trigger a re-derive on the next command; adding or removing the `.env` outright must read as a change too (the absent-file sentinel).
 - **Side-by-side selection.** Two registered projects (a second copy of the fixture with a distinct `.env`): `ADMT_ENV` must target each correctly, and `env list`'s `*` must mark the resolution in effect.
-- **No-TTY resolution.** CI runners have no controlling terminal, so the per-terminal session layer is disabled by design and every resolution follows the global default -- tier 3 in CI exercises that path by construction, and one test asserts `env use` followed by a passthrough command behaves correctly without a TTY. The TTY-present behaviors (session pinning, stale-sid fallthrough, pruning) are tier-1/2 territory, where the terminal is faked.
+- **No-TTY resolution.** CI runners have no controlling terminal, so tier 3 exercises the tty-less rungs of the resolution ladder by construction: one test asserts `env use` plus a passthrough command behave correctly under an exported `ADMT_SESSION_KEY` (a keyed pin held across real processes), and one asserts the key-less refusal -- a project command with neither TTY nor key exits 2 naming both remedies, while `ADMT_ENV=<project>` still resolves. The TTY-present behaviors (session pinning, stale-sid fallthrough, pruning) are tier-1/2 territory, where the terminal is faked.
 
 The worktree fixture is cheap: it reuses the standalone clone and varies only the compose file and `.env`, so it ships as a test file rather than a matrix leg. If the configuration count grows, `project: worktree` becomes an acceptable matrix axis under the same rules as `multi-repo`.
 
@@ -585,7 +585,7 @@ Once `admt create project` ([ROADMAP.md](ROADMAP.md) Tier 4) lands, the bootstra
 
 The 24 concrete commands (see [ARCHITECTURE.md §Command Reference](ARCHITECTURE.md#command-reference)) split into two categories:
 
-- **3 pure-host commands** (`env init`, `env use`, `env list`) -- no *running* container required. `env init` *creates* the project and shells `docker compose config` to derive its resolved metadata (docker CLI required; daemon not). `env use` writes the active selection -- this terminal's session entry plus the global default for new terminals. `env list` reads config and, when a controlling terminal exists, pins the resolution its `*` reports. Tier 3 coverage: a single happy-path test that the binary works against `tests/container/_workspace/adamant/`, plus [Worktree Configuration Coverage](#worktree-configuration-coverage).
+- **3 pure-host commands** (`env init`, `env use`, `env list`) -- no *running* container required. `env init` *creates* the project and shells `docker compose config` to derive its resolved metadata (docker CLI required; daemon not). `env use` writes the active selection for this session -- from a terminal it also moves the global default for new sessions; a keyed session writes only its own entry, and a key-less tty-less caller is refused. `env list` reads config and, when a session handle exists, pins the resolution its `*` reports. Tier 3 coverage: a single happy-path test that the binary works against `tests/container/_workspace/adamant/`, plus [Worktree Configuration Coverage](#worktree-configuration-coverage).
 - **21 project + container commands** -- everything else. Tier 3 coverage: each gets one happy-path test plus the full failure-path matrix where applicable to the command.
 
 ### Per-Alias Coverage
@@ -751,7 +751,7 @@ The implementation PR (the placeholder PR #19) brings **Tier 1+2 into CI** -- th
      - `test_env_lifecycle.py` -- start/stop/restart/status/refresh.
      - `test_env_exec_login.py` -- exec, login, env exec.
      - `test_env_init_use_list.py` -- init, use, list, with multi-marker validation.
-     - `test_env_worktrees.py` -- parameterized-compose registration with a colocated `.env`, `.env`-edit staleness re-derive, two side-by-side projects selected via `ADMT_ENV`, and no-TTY resolution ([Worktree Configuration Coverage](#worktree-configuration-coverage)).
+     - `test_env_worktrees.py` -- parameterized-compose registration with a colocated `.env`, `.env`-edit staleness re-derive, two side-by-side projects selected via `ADMT_ENV`, and tty-less resolution (keyed pin + key-less refusal; [Worktree Configuration Coverage](#worktree-configuration-coverage)).
      - `test_env_image.py` -- build, push, pull, rm with `--volumes`/`--image`/`--remove-all`.
      - `test_passthrough.py` -- build, what, test [--all], style [--all], analyze [--all], clean [--all], prove, coverage [--all], publish [--all].
      - `test_templates.py` -- templates, templates --undo, the `~/.admt/backup-latest` marker behavior.
