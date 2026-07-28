@@ -684,8 +684,8 @@ Covering the [Compose Parsing](ARCHITECTURE.md#compose-parsing) and [Active Proj
 | Stale entry (`getsid` mismatch) | Ignored and pruned; falls back to global |
 | No controlling TTY, no session key | Project-requiring commands refuse (exit 2); `env list` lists projects with no active marker |
 | No TTY + `ADMT_SESSION_KEY` set | Pin held under `session:<key>`; survives another session's `env use` |
-| No TTY + recognized harness id set | Pin held with zero configuration; source names the harness variable |
-| No TTY + both key variables set | `ADMT_SESSION_KEY` outranks the harness variable |
+| No TTY + recognized harness id set (`CLAUDE_CODE_SESSION_ID` / `CODEX_THREAD_ID` / `GEMINI_SESSION_ID`) | Pin held with zero configuration; source reported as a generic `this session (harness session id)` |
+| No TTY + both key variables set | `ADMT_SESSION_KEY` outranks any harness variable |
 | Empty key value (either variable) | Treated as unset |
 | TTY present + session key set | TTY wins; no keyed entry is written |
 | Keyed entry idle past the prune window | Ignored and pruned; falls back to global, then re-pins |

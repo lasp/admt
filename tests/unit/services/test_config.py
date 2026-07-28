@@ -1143,10 +1143,20 @@ def test_current_session_key_none_when_terminal_present(monkeypatch):
 
 
 @pytest.mark.usefixtures("_headless")
-def test_current_session_key_recognizes_harness_id(monkeypatch):
-    """A supported harness's session id keys the store with zero configuration."""
-    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "16c716de")
+@pytest.mark.parametrize("var", ["CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "GEMINI_SESSION_ID"])
+def test_current_session_key_recognizes_harness_id(monkeypatch, var):
+    """Each supported harness's session id keys the store with zero configuration."""
+    monkeypatch.setenv(var, "16c716de")
     assert _current_session_key() == ("session:16c716de", ActiveSource.HARNESS_SESSION)
+
+
+def test_recognized_harness_vars_are_exactly_the_reviewed_set():
+    """Guard the curated list: recognizing a new harness variable is a
+    deliberate, reviewed addition, not an accident. Update this set only
+    alongside the maintainer-approved list in ``_HARNESS_SESSION_VARS``.
+    """
+    names = [name for name, _source in config_mod._HARNESS_SESSION_VARS]
+    assert names == ["CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "GEMINI_SESSION_ID"]
 
 
 @pytest.mark.usefixtures("_headless")

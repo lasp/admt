@@ -92,15 +92,30 @@ Each of these forwards to redo inside the container, mapping your host working d
 
 Global flags go **before** the subcommand (`admt -v build`), like `docker` and `git`. Subcommand-specific flags (`--all`, `--undo`, etc.) go after.
 
-## Scripts and agents
+## Selecting the active project
 
-`ADMT_NONINTERACTIVE=1` switches admt into non-blocking mode: prompts become errors with non-zero exit codes and a message naming the flag to pass. Use it in CI and for AI agents.
+Every command targets one **active project** -- the container admt forwards into. It is chosen in this order:
 
-`ADMT_ENV=<project>` overrides the active project for one invocation:
+1. **`ADMT_ENV=<project>`** -- a per-command override; wins over everything and pins nothing.
+2. **Your session's pin** -- what `admt env use` recorded for this terminal or headless session.
+3. **The global default** -- the last project a terminal `env use`d or `env init` registered.
+
+Set it once per session and every later command follows:
+
+- **In a terminal:** `admt env use <project>` pins this terminal (keyed on its tty).
+- **Headless -- AI agents, CI (no tty):** `admt env use <project>` pins your *session*. admt keys the pin on your harness's session id, so one `env use` holds across every later command even though each runs in a fresh shell that would drop an `export`. Claude Code (`CLAUDE_CODE_SESSION_ID`) and Codex (`CODEX_THREAD_ID`) are detected automatically; Gemini CLI's `GEMINI_SESSION_ID` is recognized too but only appears in its hook environment, not the normal shell path. Any other harness can supply its own stable id via `ADMT_SESSION_KEY`.
+- **One-off / orchestration:** `ADMT_ENV=<project> admt <cmd>` selects the project for that single call.
 
 ```bash
-ADMT_ENV=adamant-standalone admt build
+ADMT_ENV=adamant-standalone admt build     # one invocation, no pin
+admt env use my-project                    # pin this session (terminal or agent)
 ```
+
+A headless `env use` pins **only your session** -- it never moves the global default, so concurrent agents (one per worktree) do not collide. A headless caller with **no tty and no session key** is refused rather than silently building against whatever the shared global happens to be; the error names the fix. `admt env status` reports which of the above selected the active project.
+
+## Scripts and agents
+
+`ADMT_NONINTERACTIVE=1` switches admt into non-blocking mode: prompts become errors with non-zero exit codes and a message naming the flag to pass. Use it in CI and for AI agents -- pair it with a project selection (above) so a tty-less run both avoids prompts and knows which project to target.
 
 ## Shell completion
 

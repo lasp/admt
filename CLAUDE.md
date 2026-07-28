@@ -30,6 +30,8 @@ uv tool install --python 3.14 --reinstall --editable .      # rebuild the `admt`
 
 The `admt` binary on PATH is the **installed** tool, not your live source. After editing, either invoke `uv run admt ...` (which executes from source without reinstalling), or run `uv tool install --python 3.14 --reinstall --editable .` to refresh the installed binary before testing end-to-end against a real container (`admt env start` and friends).
 
+When you run admt end-to-end from here you are almost certainly **tty-less** (an agent shell or CI), so it must be told which registered project to target: set `ADMT_ENV=<project>` per command, export a stable `ADMT_SESSION_KEY` once, or rely on your harness's auto-detected session id (Claude Code / Codex). A tty-less caller with none of these is refused by design -- see [ARCHITECTURE.md](ARCHITECTURE.md) §Active Project Resolution and the README's *Selecting the active project*.
+
 ## The quality gate
 
 A change is not done until all four pass. See [TEST_PLAN.md](TEST_PLAN.md) for the rationale, the mocking boundaries, and the 100% line+branch coverage rule.

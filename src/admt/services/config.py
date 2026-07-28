@@ -42,14 +42,16 @@ _TTY_FDS = (0, 2, 1)
 # disjoint from tty device paths in ``sessions.yml``.
 _SESSION_KEY_PREFIX = "session:"
 # Keyed entries carry a last-used timestamp instead of a live ``sid``. Prune
-# after 7 days of disuse: long enough for any realistic agent session, short
-# enough that ``sessions.yml`` does not accumulate unbounded entries. An
-# expired pin simply re-pins on the session's next resolution.
-_KEYED_MAX_IDLE_SECS = 7 * 24 * 60 * 60
+# after 30 days of disuse: long enough for a long-lived session that is resumed
+# across restarts and only occasionally exercised (the pin persists on disk,
+# keyed by a harness session id that a resume preserves), short enough that
+# ``sessions.yml`` does not accumulate unbounded entries. An expired pin simply
+# re-pins on the session's next resolution.
+_KEYED_MAX_IDLE_SECS = 30 * 24 * 60 * 60
 # Refresh a keyed entry's last-used stamp at most hourly. Touch-on-read keeps
 # an actively-resolving session from ever expiring; the throttle bounds write
 # frequency so concurrent sessions don't race the whole-file store on every
-# command. An hour of stamp drift is negligible against the 7-day window.
+# command. An hour of stamp drift is negligible against the 30-day window.
 _KEYED_TOUCH_INTERVAL_SECS = 60 * 60
 
 
@@ -67,21 +69,32 @@ class ActiveSource(StrEnum):
     ENV_OVERRIDE = "ADMT_ENV"
     SESSION = "this terminal"
     KEY_SESSION = "this session (ADMT_SESSION_KEY)"
-    HARNESS_SESSION = "this session (CLAUDE_CODE_SESSION_ID)"
+    HARNESS_SESSION = "this session (harness session id)"
     GLOBAL = "global default"
     NO_SESSION = "no session (no tty or session key)"
 
 
-# Well-known agent-harness session variables, consulted (in order) after
+# Well-known agent-harness session variables, consulted in order after
 # ``ADMT_SESSION_KEY``. Each is a stable per-session id the harness injects
-# into every subprocess environment -- the harness-level analog of a
-# controlling tty, which the harness itself severs (fresh ``setsid`` per
-# command shell). A curated table of well-known context variables is the
-# established CLI idiom for execution-context detection (CI detection,
-# ``NO_COLOR``, the ``EDITOR`` chain); ``ADMT_SESSION_KEY`` remains the
-# generic, vendor-neutral override for any harness not listed here.
+# into the environment -- the harness-level analog of a controlling tty, which
+# the harness itself severs (fresh ``setsid`` per command shell). A curated
+# table of well-known context variables is the established CLI idiom for
+# execution-context detection (CI detection, ``NO_COLOR``, the ``EDITOR``
+# chain); ``ADMT_SESSION_KEY`` remains the generic, vendor-neutral override for
+# any harness not listed here. This list is the recognized set -- add a new
+# harness's variable only on evidence it is injected the way the notes below
+# describe; anything unlisted still works via ``ADMT_SESSION_KEY``.
+#
+# Reliability differs by harness: ``CLAUDE_CODE_SESSION_ID`` and
+# ``CODEX_THREAD_ID`` are present in the normal shell/tool-execution
+# environment, so they match on every command. ``GEMINI_SESSION_ID`` is
+# exposed only in Gemini CLI's hook environment, not on the normal shell path
+# where admt runs -- it is listed for completeness but will not match on a
+# typical invocation.
 _HARNESS_SESSION_VARS: tuple[tuple[str, ActiveSource], ...] = (
     ("CLAUDE_CODE_SESSION_ID", ActiveSource.HARNESS_SESSION),
+    ("CODEX_THREAD_ID", ActiveSource.HARNESS_SESSION),
+    ("GEMINI_SESSION_ID", ActiveSource.HARNESS_SESSION),
 )
 
 # Refusal for key-less tty-less callers (ConfigError, exit 2). Without a
@@ -94,9 +107,9 @@ _NO_SESSION_MSG = (
     "belongs to, so it cannot resolve or store an active project. Either "
     "name the project per command -- ADMT_ENV=<project> admt <cmd> -- or "
     "set a stable key once per session -- export ADMT_SESSION_KEY=<unique-id>. "
-    "Known agent harnesses (Claude Code) are detected automatically; if yours "
-    "is not, set ADMT_SESSION_KEY or ask the admt maintainers to add your "
-    "harness's session variable."
+    "Known agent harnesses (Claude Code, Codex, Gemini CLI) are detected "
+    "automatically; if yours is not, set ADMT_SESSION_KEY or ask the admt "
+    "maintainers to add your harness's session variable."
 )
 
 
