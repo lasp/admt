@@ -422,3 +422,25 @@ def test_force_flag_accepted_on_passthrough_build(
     result = runner.invoke(cli, ["-f", "build"], env=_env_vars(tmp_path))
     assert result.exit_code == 0, result.output
     assert mock_container.exec.called
+
+
+# ----- parse-time usage errors are argument errors (ARCHITECTURE §Exit Codes) -----
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["clean", "a", "b"],  # extra positional on a one-positional command
+        ["--bogus", "build"],  # unknown global option
+        ["build", "--bogus"],  # unknown subcommand option
+    ],
+)
+def test_usage_errors_exit_with_argument_code(argv, registered, mock_container, tmp_path):
+    """Click-rejected invocations exit 3 like admt's own argument errors --
+    not Click's default 2, which is the environment-error code.
+    """
+    _, runner = registered
+    result = runner.invoke(cli, argv, env=_env_vars(tmp_path))
+    assert result.exit_code == ArgumentError.exit_code, result.output
+    assert "Usage:" in result.stderr  # Click's own formatting, on stderr
+    mock_container.exec.assert_not_called()

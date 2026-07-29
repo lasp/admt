@@ -242,3 +242,24 @@ def test_subprocess_invocation(tmp_path):
     )
     assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
     assert "No projects registered" in result.stdout
+
+
+def test_subprocess_usage_error_exits_argument_code(tmp_path):
+    """Shell-level check of the exit-code contract: a Click-rejected
+    invocation exits 3 (argument error) from the real entry point -- the
+    in-process CliRunner tests cannot see ``admt.main``'s console path.
+    """
+    env = {"HOME": str(tmp_path), "PATH": os.environ["PATH"]}
+    result = subprocess.run(
+        ["uv", "run", "admt", "clean", "a", "b"],  # noqa: S607
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+        cwd=str(tmp_path),
+        timeout=60,
+    )
+    assert result.returncode == ArgumentError.exit_code, (
+        f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+    assert "Usage:" in result.stderr
