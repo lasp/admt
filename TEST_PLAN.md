@@ -645,6 +645,8 @@ def test_no_circular_imports() -> None:
 | Missing markers for env init | 3 | Message: list which markers are missing |
 | Directory among multiple build targets | 3 | Message: a directory argument must be the sole positional |
 | Unknown project for env use | 3 | Message: list available projects |
+| Parse-time usage error (extra argument, unknown option, missing required argument) | 3 | Click's own usage message on stderr; Click's default of 2 is remapped -- 2 means environment error |
+| Prompt aborted with Ctrl+C (Click `Abort`) | 130 | "Aborted!" on stderr; matches the SIGINT convention |
 | Redo build failure | 1 | Show failed command, forward redo output |
 | Redo test failure | 1 | Show failed command, forward test output |
 | Container already started | 0 | Message: "already running" (idempotent) |

@@ -8,6 +8,7 @@ from admt.cli import _run_command, cli
 from admt.cli_utils import AliasedGroup
 from admt.commands.base import Command
 from admt.context import Context, Result
+from admt.exceptions import ArgumentError
 
 
 def test_cli_help_prints_tool_description():
@@ -178,3 +179,67 @@ def test_run_command_propagates_non_zero_exit_code():
     with pytest.raises(click.exceptions.Exit) as exc_info:
         _run_command(_Returner(), admt_ctx)
     assert exc_info.value.exit_code == sentinel_exit
+
+
+# ----- exit-code mapping (AliasedGroup.main, ARCHITECTURE §Exit Codes) -----
+
+
+def _mapping_group() -> AliasedGroup:
+    """A scratch group with one command per ``main()`` outcome."""
+    group = AliasedGroup(name="demo")
+
+    @group.command()
+    def ok() -> None: ...
+
+    @group.command()
+    @click.pass_context
+    def bail(ctx: click.Context) -> None:
+        ctx.exit(7)
+
+    @group.command()
+    def boom() -> None:
+        msg = "generic failure"
+        raise click.ClickException(msg)
+
+    @group.command()
+    def stop() -> None:
+        raise click.exceptions.Abort
+
+    return group
+
+
+def _exit_code(group: AliasedGroup, args: list[str]) -> int:
+    with pytest.raises(SystemExit) as excinfo:
+        group.main(args, prog_name="demo")
+    return excinfo.value.code
+
+
+def test_group_main_maps_usage_error_to_argument_exit_code(capsys):
+    """Parse-time rejections are argument errors (exit 3), not Click's 2."""
+    code = _exit_code(_mapping_group(), ["ok", "unexpected-extra"])
+    assert code == ArgumentError.exit_code
+    err = capsys.readouterr().err
+    assert "Usage:" in err  # Click's own formatting is preserved
+    assert "unexpected-extra" in err
+
+
+def test_group_main_preserves_other_click_exception_codes(capsys):
+    code = _exit_code(_mapping_group(), ["boom"])
+    assert code == click.ClickException.exit_code
+    assert "generic failure" in capsys.readouterr().err
+
+
+def test_group_main_maps_abort_to_sigint_code(capsys):
+    expected = 130
+    assert _exit_code(_mapping_group(), ["stop"]) == expected
+    assert "Aborted!" in capsys.readouterr().err
+
+
+def test_group_main_passes_ctx_exit_code_through():
+    """``ctx.exit(N)`` -- how ``_run_command`` maps AdmtErrors -- survives."""
+    expected = 7
+    assert _exit_code(_mapping_group(), ["bail"]) == expected
+
+
+def test_group_main_clean_return_exits_zero():
+    assert _exit_code(_mapping_group(), ["ok"]) == 0
