@@ -1,0 +1,4 @@
+# Every PR to main needs a review from a repo owner (Jbsco or dinkelk);
+# either one satisfies the requirement. Enforced by the branch ruleset's
+# "require code owner review" toggle -- this file alone only auto-requests.
+* @Jbsco @dinkelk
