@@ -2,6 +2,8 @@
 
 A unified command-line interface for the [Adamant](https://github.com/lasp/adamant) software framework. admt orchestrates Adamant's container, build system, and code generators behind one composable tool, so building, testing, and managing your project is `admt build` from anywhere on the host -- no juggling redo, docker exec, environment scripts, or path mapping.
 
+admt is an experimental front end for users and agents. It sits in front of Adamant's own build system and documentation and does not replace them; commands, output, and defaults may still change between releases. Adamant remains the reference for how a project is built and tested.
+
 ## Installation
 
 ```bash
