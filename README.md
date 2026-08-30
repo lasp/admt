@@ -58,7 +58,7 @@ Path arguments work too: `admt build ../other_component/` builds another directo
 | `admt env restart` | `e restart` | Stop then start. |
 | `admt env status` | `e status` | Show container status. |
 | `admt env login` | `e login` | Open an interactive shell in the container. |
-| `admt env exec <cmd>` | `e exec` | Run a command inside the container, in the directory that maps to your current directory. |
+| `admt env exec [-C <path>] <cmd>` | `e exec` | Run a command inside the container, in the directory that maps to your current directory (or `-C <path>`). |
 | `admt env build` | `e build` | Build the Docker image. |
 | `admt env push` | `e push` | Push the image to its registry. |
 | `admt env pull` | `e pull` | Pull the image from its registry. |

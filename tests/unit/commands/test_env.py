@@ -304,6 +304,17 @@ def test_env_exec_quotes_the_container_path(make_context):
     assert container.exec.call_args.args[0] == "cd '/home/user/my proj' && pwd"
 
 
+def test_env_exec_uses_explicit_directory_from_context(make_context):
+    """``-C`` lands in ``context.path`` and is what gets mapped."""
+    ctx, container = _ctx_for_exec(make_context, noninteractive=True)
+    ctx.path = Path("/host/elsewhere")
+    ctx.path_mapper.host_to_container.return_value = Path("/home/user/elsewhere")
+    container.exec.return_value = 0
+    EnvExecCommand("ls").execute(ctx)
+    assert ctx.path_mapper.host_to_container.call_args.args[0] == Path("/host/elsewhere")
+    assert container.exec.call_args.args[0] == "cd /home/user/elsewhere && ls"
+
+
 def test_env_exec_unmapped_directory_is_a_path_error(make_context):
     """Outside every mount: the passthrough rule (exit 4), not a silent run at /."""
     ctx, container = _ctx_for_exec(make_context, noninteractive=True)

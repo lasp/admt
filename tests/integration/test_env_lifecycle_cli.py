@@ -235,6 +235,22 @@ def test_env_exec_runs_in_the_directory_mapped_from_cwd(
     )
 
 
+def test_env_exec_directory_option_selects_the_mapped_directory(
+    registered, mock_container_mapped, tmp_path, monkeypatch
+):
+    """``-C`` works from anywhere, including an unmapped cwd, once it resolves into a mount."""
+    root, runner = registered
+    monkeypatch.chdir(tmp_path)  # tmp_path itself is under no mount
+    mock_container_mapped.exec.return_value = 0
+    result = runner.invoke(
+        cli,
+        ["env", "exec", "-C", str(root / "env"), "pwd"],
+        env=_env_vars(tmp_path, ADMT_NONINTERACTIVE="1"),
+    )
+    assert result.exit_code == 0, result.output
+    assert mock_container_mapped.exec.call_args.args[0] == "cd /home/user/myproj/env && pwd"
+
+
 def test_env_exec_from_an_unmapped_directory_exits_4(
     registered, mock_container_mapped, tmp_path, monkeypatch
 ):
@@ -245,6 +261,22 @@ def test_env_exec_from_an_unmapped_directory_exits_4(
     )
     assert result.exit_code == PathNotMappedError.exit_code
     assert "not under any volume mount" in result.output
+    mock_container_mapped.exec.assert_not_called()
+
+
+def test_env_exec_directory_option_outside_mounts_exits_4(
+    registered, mock_container_mapped, tmp_path, monkeypatch
+):
+    root, runner = registered
+    monkeypatch.chdir(root)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    result = runner.invoke(
+        cli,
+        ["env", "exec", "-C", str(outside), "pwd"],
+        env=_env_vars(tmp_path, ADMT_NONINTERACTIVE="1"),
+    )
+    assert result.exit_code == PathNotMappedError.exit_code
     mock_container_mapped.exec.assert_not_called()
 
 
