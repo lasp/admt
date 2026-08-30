@@ -1229,7 +1229,7 @@ Adamant generates sources into each directory's `build/src/`, so a source-relati
 
 ### `admt env exec`
 
-`admt env exec` goes through the proxy script (`/tmp/admt/<project>/exec.sh`) so that the environment is activated. The argument is passed as a shell command string via `bash -c`, and it runs in the container directory that corresponds to the host working directory, resolved through the volume mounts exactly as for the passthrough commands (see [Path Mapping](#path-mapping)). `-C <host path>` selects a different directory, resolved the same way. A directory outside every mount is a path error (exit 4), the same as for the passthrough commands; there is no silent run at the container root.
+`admt env exec` goes through the proxy script (`/tmp/admt/<project>/exec.sh`) so that the environment is activated. The argument is passed as a shell command string via `bash -c`, and it runs in the container directory that corresponds to the host working directory, resolved through the volume mounts exactly as for the passthrough commands (see [Path Mapping](#path-mapping)). `-C <host path>` selects a different directory, resolved the same way. A directory outside every mount is a path error (exit 4), the same as for the passthrough commands; there is no silent run at the container root. A command string that starts with a dash goes after Click's `--` separator: `admt env exec -- "-la"`.
 
 ```bash
 cd ~/projects/adamant_example/
