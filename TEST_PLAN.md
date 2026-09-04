@@ -345,7 +345,7 @@ def test_admt_env_override(mock_container: MagicMock, configured_projects: Path)
 
 - `admt env start` actually starts a container
 - `admt env restart` cycles the container
-- `admt env exec "echo hello"` returns "hello"
+- `admt env exec "echo hello"` returns "hello", run in the container directory mapped from the host cwd (`-C <path>` selects another mapped directory)
 - `admt build` from a real component directory builds successfully
 - `admt test` from a real component directory runs tests
 - `admt style` from a real component directory passes style checks
@@ -645,6 +645,7 @@ def test_no_circular_imports() -> None:
 | Missing markers for env init | 3 | Message: list which markers are missing |
 | Directory among multiple build targets | 3 | Message: a directory argument must be the sole positional |
 | Unknown project for env use | 3 | Message: list available projects |
+| `env exec` from a host directory outside every mount (or `-C` to one) | 4 | Message: list mapped directories; same rule as the passthrough commands |
 | Parse-time usage error (extra argument, unknown option, missing required argument) | 3 | Click's own usage message on stderr; Click's default of 2 is remapped -- 2 means environment error |
 | Prompt aborted with Ctrl+C (Click `Abort`) | 130 | "Aborted!" on stderr; matches the SIGINT convention |
 | Redo build failure | 1 | Show failed command, forward redo output |

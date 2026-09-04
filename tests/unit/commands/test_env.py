@@ -21,9 +21,10 @@ from admt.commands.env import (
     EnvStopCommand,
     EnvUseCommand,
 )
-from admt.exceptions import ArgumentError, ContainerError
+from admt.exceptions import ArgumentError, ContainerError, PathNotMappedError
 from admt.services.config import ActiveSource, ProjectConfig
 from admt.services.container import ContainerService, ContainerStatus
+from admt.services.path_mapper import PathMapperService
 
 
 def _project_stub(name: str = "myproj", mounts: int = 2) -> ProjectConfig:
@@ -213,6 +214,13 @@ def _ctx_with_container(make_context, **overrides):
     return ctx, container
 
 
+def _ctx_for_exec(make_context, container_path=Path("/home/user/proj"), **overrides):
+    """A context whose path mapper resolves the cwd to ``container_path`` (env exec)."""
+    mapper = MagicMock(spec=PathMapperService)
+    mapper.host_to_container.return_value = container_path
+    return _ctx_with_container(make_context, path_mapper=mapper, **overrides)
+
+
 def test_env_start_delegates(make_context):
     ctx, container = _ctx_with_container(make_context)
     result = EnvStartCommand().execute(ctx)
@@ -279,8 +287,45 @@ def test_env_build_forwards_no_cache(make_context):
     container.build_image.assert_called_once_with(no_cache=True)
 
 
+def test_env_exec_runs_in_the_mapped_working_directory(make_context):
+    """The host cwd maps through the mounts and the command runs there (#2)."""
+    ctx, container = _ctx_for_exec(make_context, noninteractive=True)
+    ctx.path_mapper.host_to_container.return_value = Path("/home/user/proj/src")
+    container.exec.return_value = 0
+    EnvExecCommand("echo hi").execute(ctx)
+    assert container.exec.call_args.args[0] == "cd /home/user/proj/src && echo hi"
+
+
+def test_env_exec_quotes_the_container_path(make_context):
+    ctx, container = _ctx_for_exec(make_context, noninteractive=True)
+    ctx.path_mapper.host_to_container.return_value = Path("/home/user/my proj")
+    container.exec.return_value = 0
+    EnvExecCommand("pwd").execute(ctx)
+    assert container.exec.call_args.args[0] == "cd '/home/user/my proj' && pwd"
+
+
+def test_env_exec_uses_explicit_directory_from_context(make_context):
+    """``-C`` lands in ``context.path`` and is what gets mapped."""
+    ctx, container = _ctx_for_exec(make_context, noninteractive=True)
+    ctx.path = Path("/host/elsewhere")
+    ctx.path_mapper.host_to_container.return_value = Path("/home/user/elsewhere")
+    container.exec.return_value = 0
+    EnvExecCommand("ls").execute(ctx)
+    assert ctx.path_mapper.host_to_container.call_args.args[0] == Path("/host/elsewhere")
+    assert container.exec.call_args.args[0] == "cd /home/user/elsewhere && ls"
+
+
+def test_env_exec_unmapped_directory_is_a_path_error(make_context):
+    """Outside every mount: the passthrough rule (exit 4), not a silent run at /."""
+    ctx, container = _ctx_for_exec(make_context, noninteractive=True)
+    ctx.path_mapper.host_to_container.side_effect = PathNotMappedError("not under any volume mount")
+    with pytest.raises(PathNotMappedError):
+        EnvExecCommand("pwd").execute(ctx)
+    container.exec.assert_not_called()
+
+
 def test_env_exec_uses_noninteractive_when_flag_set(make_context):
-    ctx, container = _ctx_with_container(make_context, noninteractive=True)
+    ctx, container = _ctx_for_exec(make_context, noninteractive=True)
     container.exec.return_value = 0
     EnvExecCommand("echo hi").execute(ctx)
     assert container.exec.call_args.kwargs["interactive"] is False
@@ -288,7 +333,7 @@ def test_env_exec_uses_noninteractive_when_flag_set(make_context):
 
 def test_env_exec_respects_stdin_tty_detection(make_context):
     sentinel = 7
-    ctx, container = _ctx_with_container(make_context, noninteractive=False)
+    ctx, container = _ctx_for_exec(make_context, noninteractive=False)
     container.exec.return_value = sentinel
     with patch("admt.commands.env.os.isatty", return_value=True):
         result = EnvExecCommand("bash").execute(ctx)

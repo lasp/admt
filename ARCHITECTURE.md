@@ -1229,11 +1229,14 @@ Adamant generates sources into each directory's `build/src/`, so a source-relati
 
 ### `admt env exec`
 
-`admt env exec` goes through the proxy script (`/tmp/admt/<project>/exec.sh`) so that the environment is activated. The argument is passed as a shell command string via `bash -c`:
+`admt env exec` goes through the proxy script (`/tmp/admt/<project>/exec.sh`) so that the environment is activated. The argument is passed as a shell command string via `bash -c`, and it runs in the container directory that corresponds to the host working directory, resolved through the volume mounts exactly as for the passthrough commands (see [Path Mapping](#path-mapping)). `-C <host path>` selects a different directory, resolved the same way. A directory outside every mount is a path error (exit 4), the same as for the passthrough commands; there is no silent run at the container root. A command string that starts with a dash goes after Click's `--` separator: `admt env exec -- "-la"`.
 
 ```bash
+cd ~/projects/adamant_example/
 admt env exec "cd src/components/foo && redo test"
-# Runs: docker exec -u user <container_name> /tmp/admt/<project>/exec.sh bash -c "cd src/components/foo && redo test"
+# Runs: docker exec -u user <container_name> /tmp/admt/<project>/exec.sh bash -c "cd /home/user/adamant_example && cd src/components/foo && redo test"
+admt env exec -C ~/projects/adamant_example/src/components/foo "redo test"
+# Runs: ... bash -c "cd /home/user/adamant_example/src/components/foo && redo test"
 ```
 
 ### `admt env login`
@@ -1285,7 +1288,7 @@ Complete list of commands with their redo equivalents:
 | `admt env build` | `admt e build` | N/A | No | `docker compose build`; `--no-cache` bypasses the layer cache |
 | `admt env push` | `admt e push` | N/A | No | `docker compose push` |
 | `admt env pull` | `admt e pull` | N/A | No | `docker compose pull` |
-| `admt env exec <cmd>` | `admt e exec` | N/A | Yes | Exec through proxy script; TTY auto-detected |
+| `admt env exec [-C <path>] <cmd>` | `admt e exec` | N/A | Yes | Exec through proxy script in the mapped working directory; TTY auto-detected |
 | `admt env refresh` | `admt e refresh` | N/A | Yes | Re-run activate + rebuild snapshot |
 | `admt env list` | `admt e list` | N/A | No | List registered projects (`*` = this terminal's active) |
 | `admt env rm` | `admt e rm` | N/A | No | Remove container (`--volumes`, `--image`, `--remove-all`) |

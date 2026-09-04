@@ -10,6 +10,7 @@ commands only need the config registry.
 from __future__ import annotations
 
 import os
+import shlex
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
@@ -253,9 +254,16 @@ class EnvExecCommand(Command):
         self._command = command
 
     def execute(self, context: Context) -> Result:
-        """Forward to the container through the env-snapshot proxy script."""
+        """Run the command in the mapped working directory via the proxy script.
+
+        The host cwd (or the ``-C`` directory in ``context.path``) resolves
+        through the volume mounts exactly as for the passthrough commands;
+        an unmapped directory is a path error, not a silent run at ``/``.
+        """
+        container_path = context.resolve_container_path()
+        command = f"cd {shlex.quote(str(container_path))} && {self._command}"
         interactive = os.isatty(0) and not context.noninteractive
-        exit_code = _require_container(context).exec(self._command, interactive=interactive)
+        exit_code = _require_container(context).exec(command, interactive=interactive)
         return Result(exit_code=exit_code)
 
 

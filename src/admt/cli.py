@@ -169,10 +169,18 @@ def env_pull(admt_ctx: Context) -> None:
 
 
 @env_group.command(name="exec")
+@click.option(
+    "-C",
+    "--directory",
+    type=click.Path(exists=True, file_okay=False, resolve_path=True),
+    help="Host directory to run in (mapped into the container); default: the current directory.",
+)
 @click.argument("command", required=True)
 @click.pass_obj
-def env_exec(admt_ctx: Context, command: str) -> None:
-    """Run COMMAND inside the container."""
+def env_exec(admt_ctx: Context, directory: str | None, command: str) -> None:
+    """Run COMMAND inside the container, in the mapped working directory."""
+    if directory:
+        admt_ctx.path = Path(directory)
     _run_command(EnvExecCommand(command), admt_ctx)
 
 

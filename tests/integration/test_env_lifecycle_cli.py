@@ -15,7 +15,7 @@ import pytest
 from click.testing import CliRunner
 
 from admt.cli import cli
-from admt.exceptions import ConfigError
+from admt.exceptions import ConfigError, PathNotMappedError
 from admt.services.config import ProjectConfig
 from admt.services.container import ContainerService, ContainerStatus
 from admt.services.path_mapper import PathMapperService
@@ -207,22 +207,84 @@ def test_env_pull_delegates(registered, mock_container, tmp_path):
 # ----- exec / refresh -----
 
 
-def test_env_exec_passes_command_string(registered, mock_container, tmp_path):
-    _, runner = registered
-    mock_container.exec.return_value = 0
+@pytest.fixture
+def mock_container_mapped(monkeypatch):
+    """Like ``mock_container`` but with a real PathMapperService, for ``env exec``."""
+    container = MagicMock(spec=ContainerService)
+
+    def fake_build(ctx):
+        project = ctx.config_service.get_active_project()
+        return container, PathMapperService(project.volume_mounts)
+
+    monkeypatch.setattr("admt.cli.build_container_service", fake_build)
+    return container
+
+
+def test_env_exec_runs_in_the_directory_mapped_from_cwd(
+    registered, mock_container_mapped, tmp_path, monkeypatch
+):
+    root, runner = registered
+    monkeypatch.chdir(root / "docker")
+    mock_container_mapped.exec.return_value = 0
+    result = runner.invoke(
+        cli, ["env", "exec", "redo what"], env=_env_vars(tmp_path, ADMT_NONINTERACTIVE="1")
+    )
+    assert result.exit_code == 0, result.output
+    assert (
+        mock_container_mapped.exec.call_args.args[0] == "cd /home/user/myproj/docker && redo what"
+    )
+
+
+def test_env_exec_directory_option_selects_the_mapped_directory(
+    registered, mock_container_mapped, tmp_path, monkeypatch
+):
+    """``-C`` works from anywhere, including an unmapped cwd, once it resolves into a mount."""
+    root, runner = registered
+    monkeypatch.chdir(tmp_path)  # tmp_path itself is under no mount
+    mock_container_mapped.exec.return_value = 0
     result = runner.invoke(
         cli,
-        ["env", "exec", "redo what"],
+        ["env", "exec", "-C", str(root / "env"), "pwd"],
         env=_env_vars(tmp_path, ADMT_NONINTERACTIVE="1"),
     )
     assert result.exit_code == 0, result.output
-    assert mock_container.exec.call_args.args[0] == "redo what"
+    assert mock_container_mapped.exec.call_args.args[0] == "cd /home/user/myproj/env && pwd"
 
 
-def test_env_exec_forwards_exit_code(registered, mock_container, tmp_path):
+def test_env_exec_from_an_unmapped_directory_exits_4(
+    registered, mock_container_mapped, tmp_path, monkeypatch
+):
     _, runner = registered
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(
+        cli, ["env", "exec", "pwd"], env=_env_vars(tmp_path, ADMT_NONINTERACTIVE="1")
+    )
+    assert result.exit_code == PathNotMappedError.exit_code
+    assert "not under any volume mount" in result.output
+    mock_container_mapped.exec.assert_not_called()
+
+
+def test_env_exec_directory_option_outside_mounts_exits_4(
+    registered, mock_container_mapped, tmp_path, monkeypatch
+):
+    root, runner = registered
+    monkeypatch.chdir(root)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    result = runner.invoke(
+        cli,
+        ["env", "exec", "-C", str(outside), "pwd"],
+        env=_env_vars(tmp_path, ADMT_NONINTERACTIVE="1"),
+    )
+    assert result.exit_code == PathNotMappedError.exit_code
+    mock_container_mapped.exec.assert_not_called()
+
+
+def test_env_exec_forwards_exit_code(registered, mock_container_mapped, tmp_path, monkeypatch):
+    root, runner = registered
+    monkeypatch.chdir(root)
     sentinel_code = 2
-    mock_container.exec.return_value = sentinel_code
+    mock_container_mapped.exec.return_value = sentinel_code
     result = runner.invoke(
         cli,
         ["env", "exec", "false"],
