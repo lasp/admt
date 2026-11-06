@@ -573,7 +573,7 @@ All admt container scripts are stored in a per-project directory: `/tmp/admt/<pr
 
 **`admt env refresh`:** Re-runs the full `activate`, regenerates the diff-based snapshot, and updates the exec script. Use this after changing `env/activate`, `requirements.txt`, or other environment configuration.
 
-**`admt env start`:** If the Docker image does not exist locally, auto-runs `docker compose pull`. If the pull fails (image not in registry, network error, authentication failure), admt errors with an actionable message naming the failure reason and directs the user to build locally: `Pull failed: <reason>. Build the image locally with 'admt env build'.` Then runs `docker compose up -d`.
+**`admt env start`:** If the Docker image does not exist locally, auto-runs `docker compose pull`. If the pull fails (image not in registry, network error, authentication failure), admt errors with an actionable message naming the failure reason and directs the user to build locally: `Pull failed: <reason>. Build the image locally with 'admt env build'.` Then runs `docker compose up -d --wait`, which returns once every service is running, or healthy where the service defines a healthcheck.
 
 **Failure detection for docker compose commands:** admt checks the return code of every `docker compose` invocation. On non-zero exit, the captured stderr is forwarded to the caller as part of the error message. This applies to `up`, `pull`, `build`, `push`, `stop`, `down`, and `exec`. Error messages always name the underlying command and include its stderr output so the user can diagnose without re-running with `--verbose`.
 
@@ -1280,7 +1280,7 @@ Complete list of commands with their redo equivalents:
 |-------------|-------|-----------------|------------|-------|
 | `admt env init [path]` | `admt e init` | N/A | No | Register project, verify markers, derive resolved compose config |
 | `admt env use <name>` | `admt e use` | N/A | No | Switch active project (this terminal now; default for new terminals) |
-| `admt env start` | `admt e start` | N/A | No | Auto-pull if needed, `docker compose up -d` + activate |
+| `admt env start` | `admt e start` | N/A | No | Auto-pull if needed, `docker compose up -d --wait` + activate |
 | `admt env stop` | `admt e stop` | N/A | No | `docker compose stop` |
 | `admt env restart` | `admt e restart` | N/A | No | stop + start |
 | `admt env login` | `admt e login` | N/A | Yes | Interactive bash shell (env activated via .bashrc) |

@@ -74,7 +74,7 @@ class ContainerService:
             if pull.returncode != 0:
                 msg = f"Pull failed for '{image}'. Build the image locally with 'admt env build'."
                 raise ContainerError(msg)
-        self._echo_compose("up -d")
+        self._echo_compose("up -d --wait")
         self._raise_on_failure("up", self._docker.compose_up())
         self.ensure_env_snapshot()
         self._output.success(f"Container '{self._project.container_name}' is running.")

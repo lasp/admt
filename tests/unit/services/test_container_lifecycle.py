@@ -415,7 +415,7 @@ def test_verbose_echoes_compose_up_on_start(docker, capsys):
     svc.start()
     captured = capsys.readouterr()
     assert "docker compose -f" in captured.out
-    assert "up -d" in captured.out
+    assert "up -d --wait" in captured.out
 
 
 def test_verbose_echoes_compose_stop_on_stop(docker, capsys):
