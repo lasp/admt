@@ -225,8 +225,8 @@ class DockerAdapter:
     # ------------------------------------------------------------------
 
     def compose_up(self) -> CommandResult:
-        """``docker compose up -d``."""
-        return self._run_streaming(["up", "-d"])
+        """``docker compose up -d --wait``."""
+        return self._run_streaming(["up", "-d", "--wait"])
 
     def compose_stop(self) -> CommandResult:
         """``docker compose stop``."""

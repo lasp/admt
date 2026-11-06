@@ -94,7 +94,7 @@ def test_compose_up_builds_argv(adapter):
     with patch("subprocess.Popen", return_value=_make_popen_mock()) as popen:
         result = adapter.compose_up()
     assert result.returncode == 0
-    _assert_streamed(adapter, ["up", "-d"], popen)
+    _assert_streamed(adapter, ["up", "-d", "--wait"], popen)
 
 
 def test_compose_stop_builds_argv(adapter):
