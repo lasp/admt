@@ -205,7 +205,7 @@ The gate runs on drafts too (a draft with broken style/types/coverage should sti
 strategy:
   fail-fast: false
   matrix:
-    os: [ubuntu-24.04, macos-14]
+    os: [ubuntu-24.04, macos-15]
 ```
 
 `fail-fast: false` so a Linux failure doesn't hide a separate macOS failure. Both must pass. [CODING_RULES.md §Language and Runtime](CODING_RULES.md#language-and-runtime) names Linux + macOS as the target platforms; CI matches the spec.
@@ -293,7 +293,7 @@ The container job ships single-config (`project: standalone`) and grows along or
 **Acceptable matrix axes:**
 
 - `project: [standalone, multi-repo]` -- exercises path-mapping against single-mount and multi-mount Adamant project shapes. Follow-up after standalone is stable.
-- `os: [ubuntu-24.04, macos-14]` -- when admt grows tier-3-relevant macOS coverage. Currently macOS doesn't ship a usable Adamant container; this axis stays single-OS until upstream changes.
+- `os: [ubuntu-24.04, macos-15]` -- when admt grows tier-3-relevant macOS coverage. Currently macOS doesn't ship a usable Adamant container; this axis stays single-OS until upstream changes.
 Version-drift across Adamant releases is deliberately **not** a PR/push matrix axis: PR and push CI pin a single image for determinism, and [`upstream.yml`](#workflow-upstreamyml-roadmap) (weekly, against `:latest`) is the early-warning signal for upstream Adamant drift.
 
 **Antipattern: per-command matrix.** Decomposing tier 3 into one matrix leg per admt command (`{command: [build, test, style, ...]}`) is the wrong shape: each leg is a fresh runner with a fresh container, paying the full pull + activate cost (5-10 minutes) for ~30 seconds of test work. Per-test rendering already comes from the JUnit + `mikepenz/action-junit-report` path -- splitting commands into matrix legs adds runtime without buying isolation we need.
@@ -858,10 +858,10 @@ These are *order-of-magnitude* estimates, not commitments. Wall times are domina
 | Job | Workflow | OS | Wall Time (steady) | Wall Time (cold) |
 |---|---|---|---|---|
 | `gate (ubuntu-24.04)` | gate.yml | linux | ~90s -- 2m | ~3m |
-| `gate (macos-14)` | gate.yml | macos | ~2m -- 3m | ~4m |
+| `gate (macos-15)` | gate.yml | macos | ~2m -- 3m | ~4m |
 | `container (standalone)` | container.yml | linux | **~8m -- 12m** | **~12m -- 18m** |
 | `gate-release (ubuntu-24.04)` | release.yml | linux | ~90s -- 2m | ~3m |
-| `gate-release (macos-14)` | release.yml | macos | ~2m -- 3m | ~4m |
+| `gate-release (macos-15)` | release.yml | macos | ~2m -- 3m | ~4m |
 | `container-release` | release.yml | linux | ~8m -- 12m | ~12m -- 18m |
 | `build-wheel` | release.yml | linux | ~30s | ~1m |
 | `publish-pypi` | release.yml | linux | ~10s | ~30s |
